@@ -14,8 +14,8 @@
       {
         "title": "Arc",
         "label": "main",
-        "width": 720,
-        "height": 540,
+        "width": 680,
+        "height": 480,
         "resizable": false,
         "decorations": false,
         "transparent": true,
