@@ -31,8 +31,21 @@ import {
   Sliders,
   Key,
   Bot,
-  Compass
+  Compass,
+  ArrowDownCircle,
+  Download,
+  CheckCircle2
 } from 'lucide-react';
+import {
+  CURRENT_APP_VERSION,
+  checkForAppUpdates,
+  applyAppUpdate,
+  restartApplication,
+  getAutoCheckUpdates,
+  setAutoCheckUpdates,
+  UpdateInfo,
+  GITHUB_RELEASES_PAGE,
+} from '@/lib/updater-service';
 import {
   useIsTauri,
   hideDesktopWindow,
@@ -97,7 +110,16 @@ export default function LauncherPage() {
 
   // Settings & Tabs
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'apps' | 'bangs' | 'favorites' | 'ai'>('apps');
+  const [settingsTab, setSettingsTab] = useState<'apps' | 'bangs' | 'favorites' | 'ai' | 'updates'>('apps');
+
+  // Auto-Updater State
+  const [autoCheckUpdates, setAutoCheckUpdatesState] = useState<boolean>(() => getAutoCheckUpdates());
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [detectedUpdate, setDetectedUpdate] = useState<UpdateInfo | null>(null);
+  const [updateStatusText, setUpdateStatusText] = useState<string | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+  const [updateReadyRestart, setUpdateReadyRestart] = useState(false);
+  const [showUpdateBanner, setShowUpdateBanner] = useState(false);
 
   // Search Bangs State
   const [searchBangs, setSearchBangs] = useState<SearchBang[]>(() => getStoredBangs());
@@ -333,6 +355,96 @@ export default function LauncherPage() {
     } finally {
       setIsTestingAiKey(false);
     }
+  };
+
+  // Silently check for updates on mount if auto-check is enabled
+  useEffect(() => {
+    if (!autoCheckUpdates) return;
+    let isMounted = true;
+    const timer = setTimeout(async () => {
+      try {
+        const info = await checkForAppUpdates();
+        if (isMounted && info.available) {
+          setDetectedUpdate(info);
+          setShowUpdateBanner(true);
+        }
+      } catch (err) {
+        console.warn('Auto update check error:', err);
+      }
+    }, 1500);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
+  }, [autoCheckUpdates]);
+
+  const handleCheckUpdatesManually = async () => {
+    setIsCheckingUpdate(true);
+    setUpdateStatusText('Checking for new releases...');
+    try {
+      const info = await checkForAppUpdates();
+      setDetectedUpdate(info);
+      if (info.available) {
+        setUpdateStatusText(`New release available: ${info.latestVersion}`);
+        showToast(`Update available: ${info.latestVersion}`);
+        setShowUpdateBanner(true);
+      } else {
+        setUpdateStatusText(`Arc Desktop is up to date (v${CURRENT_APP_VERSION})`);
+        showToast(`Arc Desktop is up to date (v${CURRENT_APP_VERSION})`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setUpdateStatusText(`Check failed: ${msg}`);
+      showToast('Could not check for updates');
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    if (!detectedUpdate) return;
+    setUpdateProgress(0);
+    setUpdateStatusText('Connecting to update server...');
+    try {
+      const result = await applyAppUpdate(detectedUpdate, (pct, status) => {
+        setUpdateProgress(pct);
+        setUpdateStatusText(status);
+      });
+      if (result.success) {
+        setUpdateReadyRestart(true);
+        showToast(result.message);
+      } else {
+        showToast(result.message);
+        setUpdateProgress(null);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setUpdateStatusText(`Installation failed: ${msg}`);
+      showToast('Update failed: ' + msg);
+      setUpdateProgress(null);
+    }
+  };
+
+  const handleRestartApp = async () => {
+    showToast('Restarting Arc Desktop...');
+    await restartApplication();
+  };
+
+  const handleSimulateUpdateFlow = () => {
+    setDetectedUpdate({
+      available: true,
+      currentVersion: CURRENT_APP_VERSION,
+      latestVersion: 'v0.2.0',
+      releaseDate: new Date().toLocaleDateString(),
+      notes: '• Added automated background updater with signature verification\n• Added agentic AI natural language action execution\n• Optimized Alt+Space launcher response latency',
+      isNativeTauri: isTauri,
+    });
+    setShowUpdateBanner(true);
+    setUpdateReadyRestart(false);
+    setUpdateProgress(null);
+    setUpdateStatusText('Simulated release v0.2.0 ready to test');
+    showToast('Simulated update v0.2.0 loaded');
   };
 
   // Global key listener for hotkey and Escape
@@ -728,6 +840,36 @@ export default function LauncherPage() {
           </div>
         </div>
 
+        {/* Update Notification Banner */}
+        {showUpdateBanner && detectedUpdate && (
+          <div className="mb-2 bg-gradient-to-r from-sky-500/20 via-indigo-500/20 to-emerald-500/20 border border-sky-500/40 rounded-xl p-2.5 flex items-center justify-between text-xs text-sky-200 shadow-lg backdrop-blur-md animate-in fade-in slide-in-from-top-1">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping shrink-0" />
+              <span>
+                Arc Desktop <strong>{detectedUpdate.latestVersion || 'Update'}</strong> is available!
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setShowSettings(true);
+                  setSettingsTab('updates');
+                }}
+                className="px-2.5 py-1 bg-sky-500 text-slate-950 font-bold rounded-md hover:bg-sky-400 transition text-[11px] shadow-sm"
+              >
+                View & Install
+              </button>
+              <button
+                onClick={() => setShowUpdateBanner(false)}
+                className="p-1 text-slate-400 hover:text-white transition rounded"
+                title="Dismiss banner"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Command Card Container */}
         <div className="bg-slate-900/90 border border-slate-700/70 rounded-2xl shadow-2xl shadow-black/80 backdrop-blur-2xl overflow-hidden flex flex-col transition-all relative">
           {showSettings ? (
@@ -773,6 +915,13 @@ export default function LauncherPage() {
                     >
                       <Sparkles className="w-3.5 h-3.5" />
                       <span>AI & Agent</span>
+                    </button>
+                    <button
+                      onClick={() => setSettingsTab('updates')}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition flex items-center gap-1.5 ${settingsTab === 'updates' ? 'bg-sky-500 text-slate-950 font-semibold shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                    >
+                      <ArrowDownCircle className="w-3.5 h-3.5" />
+                      <span>Updates {detectedUpdate?.available ? '●' : ''}</span>
                     </button>
                   </div>
                 </div>
@@ -1106,7 +1255,7 @@ export default function LauncherPage() {
                     ))}
                   </div>
                 </div>
-              ) : (
+              ) : settingsTab === 'ai' ? (
                 /* Tab 4: AI & Agent Configuration */
                 <div className="p-4 overflow-y-auto flex-1 space-y-5">
                   <div className="p-4 bg-slate-800/30 rounded-xl border border-slate-700/50 space-y-4">
@@ -1195,6 +1344,162 @@ export default function LauncherPage() {
                       <div>• &quot;add search bang amz for amazon&quot;</div>
                       <div>• &quot;bookmark https://linear.app as Linear&quot;</div>
                       <div>• &quot;save snippet :email with myemail@domain.com&quot;</div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* Tab 5: Updates & Maintenance */
+                <div className="p-4 overflow-y-auto flex-1 space-y-4">
+                  {/* Current App Version & Environment */}
+                  <div className="p-4 bg-slate-800/30 rounded-xl border border-slate-700/50 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-sky-500/20 border border-sky-500/30 flex items-center justify-center text-sky-400">
+                          <ArrowDownCircle className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h3 className="text-xs font-semibold text-white">Arc Desktop Auto-Updater</h3>
+                          <p className="text-[11px] text-slate-400">
+                            Current Version: <span className="font-mono text-sky-300 font-semibold">v{CURRENT_APP_VERSION}</span>
+                          </p>
+                        </div>
+                      </div>
+                      <span className={`text-[10px] px-2.5 py-1 rounded-full font-medium border ${
+                        isTauri ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                      }`}>
+                        {isTauri ? 'Tauri Native Mode' : 'Web Simulation'}
+                      </span>
+                    </div>
+
+                    {/* Auto-check Toggle */}
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-800/70">
+                      <div>
+                        <span className="text-xs text-slate-200 font-medium block">Automatic Update Checks</span>
+                        <span className="text-[11px] text-slate-400 block">Silently check for new versions on application launch</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !autoCheckUpdates;
+                          setAutoCheckUpdatesState(next);
+                          setAutoCheckUpdates(next);
+                          showToast(next ? 'Automatic update checks enabled' : 'Automatic update checks disabled');
+                        }}
+                        className={`w-11 h-6 rounded-full transition-colors relative ${autoCheckUpdates ? 'bg-sky-500' : 'bg-slate-700'}`}
+                      >
+                        <span
+                          className={`block w-4 h-4 rounded-full bg-white transition-transform ${autoCheckUpdates ? 'translate-x-6' : 'translate-x-1'}`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Check & Status Panel */}
+                  <div className="p-4 bg-slate-800/30 rounded-xl border border-slate-700/50 space-y-3.5">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-semibold text-slate-200">Release Status</h4>
+                      <button
+                        onClick={handleCheckUpdatesManually}
+                        disabled={isCheckingUpdate}
+                        className="px-3 py-1.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold rounded-lg text-xs transition flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isCheckingUpdate ? 'animate-spin' : ''}`} />
+                        <span>{isCheckingUpdate ? 'Checking...' : 'Check for Updates'}</span>
+                      </button>
+                    </div>
+
+                    {/* If update found */}
+                    {detectedUpdate?.available ? (
+                      <div className="p-3.5 bg-sky-950/40 border border-sky-500/40 rounded-xl space-y-3">
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping shrink-0" />
+                            <div>
+                              <p className="text-xs font-semibold text-white">
+                                New Version Available: <span className="font-mono text-sky-300 font-bold">{detectedUpdate.latestVersion}</span>
+                              </p>
+                              {detectedUpdate.releaseDate && (
+                                <p className="text-[11px] text-slate-400">Published on {detectedUpdate.releaseDate}</p>
+                              )}
+                            </div>
+                          </div>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30 font-semibold uppercase tracking-wider">
+                            Ready
+                          </span>
+                        </div>
+
+                        {detectedUpdate.notes && (
+                          <div className="bg-slate-950/60 p-2.5 rounded-lg border border-slate-800 text-[11px] text-slate-300 max-h-28 overflow-y-auto whitespace-pre-wrap font-sans">
+                            {detectedUpdate.notes}
+                          </div>
+                        )}
+
+                        {/* Progress bar if downloading */}
+                        {updateProgress !== null && (
+                          <div className="space-y-1.5">
+                            <div className="flex justify-between text-[11px] text-slate-400">
+                              <span>{updateStatusText || 'Downloading...'}</span>
+                              <span>{updateProgress}%</span>
+                            </div>
+                            <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                              <div
+                                className="h-full bg-gradient-to-r from-sky-500 to-emerald-400 transition-all duration-300"
+                                style={{ width: `${updateProgress}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Action button */}
+                        <div className="flex items-center gap-2 pt-1">
+                          {updateReadyRestart ? (
+                            <button
+                              onClick={handleRestartApp}
+                              className="w-full py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-xs transition flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-500/20"
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                              <span>Restart Arc Desktop to Apply</span>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={handleInstallUpdate}
+                              disabled={updateProgress !== null}
+                              className="w-full py-2 bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold rounded-lg text-xs transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                            >
+                              <Download className="w-4 h-4" />
+                              <span>Download & Install {detectedUpdate.latestVersion}</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-3 bg-slate-950/50 rounded-xl border border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span>{updateStatusText || `Arc Desktop is up to date (v${CURRENT_APP_VERSION})`}</span>
+                        </div>
+                        <button
+                          onClick={handleSimulateUpdateFlow}
+                          className="text-[11px] text-sky-400 hover:text-sky-300 underline shrink-0"
+                          title="Test simulation of the updater UI flow"
+                        >
+                          Test Simulation
+                        </button>
+                      </div>
+                    )}
+
+                    {/* GitHub Releases Info */}
+                    <div className="pt-2 border-t border-slate-800/70 flex items-center justify-between text-[11px] text-slate-400">
+                      <span>GitHub Releases Channel</span>
+                      <a
+                        href={GITHUB_RELEASES_PAGE}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-sky-400 hover:underline flex items-center gap-1"
+                      >
+                        <span>View releases on GitHub</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
                     </div>
                   </div>
                 </div>

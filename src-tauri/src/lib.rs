@@ -282,9 +282,16 @@ fn scan_installed_apps() -> Vec<AppInfo> {
     apps
 }
 
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    app.restart();
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -302,7 +309,8 @@ pub fn run() {
             toggle_window,
             open_external_url,
             launch_system_app,
-            scan_installed_apps
+            scan_installed_apps,
+            restart_app
         ])
         .setup(|app| {
             // Register global shortcut: Option+Space on macOS, Alt+Space on Windows/Linux

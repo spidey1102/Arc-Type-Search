@@ -8,3 +8,6 @@ coverage/
 .env*
 !.env.example
 .vercel/
+*.key
+*.pub
+src-tauri/*-key*
