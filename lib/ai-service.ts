@@ -11,6 +11,14 @@ export interface AiServiceConfig {
   useLocalFallback: boolean;
 }
 
+export interface AiChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  actionExecuted?: AgentAction;
+  timestamp: number;
+}
+
 export interface AiQueryResult {
   text: string;
   actionExecuted?: AgentAction;
@@ -54,8 +62,113 @@ export function saveStoredModel(model: string): void {
 /**
  * Intelligent local fallback knowledge engine when offline or no API key is set.
  */
-export function getLocalAiAnswer(prompt: string): string | null {
+export function getLocalAiAnswer(prompt: string, history?: AiChatMessage[]): string | null {
   const p = prompt.trim().toLowerCase();
+
+  // 0. Contextual follow-up handling from history if available
+  if (history && history.length > 0) {
+    const lastAssistantMsg = [...history].reverse().find(m => m.role === 'assistant')?.text || '';
+    const lastUserMsg = [...history].reverse().find(m => m.role === 'user')?.text || '';
+    const ctx = (lastAssistantMsg + ' ' + lastUserMsg).toLowerCase();
+
+    // Contextual follow-up: Explain more / in depth
+    if (/^(explain more|tell me more|elaborate|go deeper|more details|explain further|why is that|how so|can you elaborate)\b/i.test(p)) {
+      if (ctx.includes('reverse a string') || ctx.includes('reverse string')) {
+        return `🔍 **Deep Dive: String Reversal Mechanisms**
+• **Python (\`text[::-1]\`)**: Uses slice notation \`[start:stop:step]\`. Step \`-1\` strides backward in $O(N)$ time with minimal allocation overhead.
+• **JavaScript / TypeScript**: Strings are primitive values (immutable). \`split('')\` allocates a character array, \`reverse()\` reverses in-place, and \`join('')\` reassembles. For full Unicode/emoji safety, use \`Array.from(str).reverse().join('')\`.
+• **Rust**: Strings are valid UTF-8 sequences. \`.chars()\` iterates over Unicode scalar values, \`.rev()\` reverses the iterator, and \`.collect::<String>()\` allocates the final reversed buffer safely without breaking multi-byte character boundaries.`;
+      }
+      if (ctx.includes('let vs const') || ctx.includes('let and const')) {
+        return `🔍 **Deep Dive: Temporal Dead Zone & Scope**
+• **Temporal Dead Zone (TDZ)**: Both \`let\` and \`const\` exist in TDZ from the start of the block until the evaluation of their declaration line. Accessing them beforehand throws a \`ReferenceError\`.
+• **Reference vs Value Immutability**: \`const\` guarantees that the identifier binding cannot be reassigned. However, the properties of an object or elements of an array assigned to \`const\` can still be mutated unless protected by \`Object.freeze()\`.`;
+      }
+      if (ctx.includes('git undo commit') || ctx.includes('git reset')) {
+        return `🔍 **Deep Dive: Git Reset Internals**
+• Git commits are immutably addressed SHA pointers in a DAG.
+• \`--soft\` moves the \`HEAD\` branch ref back 1 commit while leaving your staging index and working tree untouched.
+• \`--mixed\` (default) resets the staging index but keeps working tree changes unstaged.
+• \`--hard\` updates index and working tree. If run accidentally, recover lost commits using \`git reflog\`.`;
+      }
+      if (ctx.includes('quantum computing')) {
+        return `🔍 **Deep Dive: Superposition & Entanglement**
+• **Superposition**: A qubit can represent states as a linear superposition $|\psi\rangle = \alpha|0\rangle + \beta|1\rangle$, allowing algorithms to explore vast solution spaces simultaneously.
+• **Entanglement**: Qubits can be linked such that measuring one immediately determines the state of the other, enabling high-performance quantum telecomputation and dense cryptography.`;
+      }
+      return `🔍 **Detailed Breakdown for "${lastUserMsg}":**
+• **Core Concept**: Following up on our previous discussion about ${lastUserMsg || 'your question'}.
+• **Application**: Break down the problem into discrete modules, ensuring clear boundary conditions.
+• **Best Practice**: Validate runtime inputs, monitor latency, and keep dependencies minimal.`;
+    }
+
+    // Contextual follow-up: Give an example / code example
+    if (/^(give an example|show an example|code example|example|demo|sample code|can you give an example)\b/i.test(p)) {
+      if (ctx.includes('reverse a string') || ctx.includes('reverse string')) {
+        return `📝 **Practical Code Example:**
+\`\`\`typescript
+// Unicode & Emoji-safe string reversal
+function reverseString(input: string): string {
+  return Array.from(input).reverse().join('');
+}
+
+console.log(reverseString("Arc Desktop")); // "potkseD crA"
+console.log(reverseString("Rocket 🚀"));    // "🚀 tekcoR"
+\`\`\``;
+      }
+      if (ctx.includes('let vs const')) {
+        return `📝 **Practical Code Example:**
+\`\`\`typescript
+// Immutable configuration
+const APP_PORT = 3000;
+
+// Mutable state loop
+let connectionAttempts = 0;
+while (connectionAttempts < 3) {
+  connectionAttempts++;
+  console.log(\`Connecting... attempt \${connectionAttempts}\`);
+}
+\`\`\``;
+      }
+      return `📝 **Example Scenario:**
+\`\`\`bash
+# Run command in Arc Desktop or system terminal:
+arc --query "${lastUserMsg || 'example'}"
+\`\`\``;
+    }
+
+    // Contextual language translation (e.g. "in rust", "in python", "in typescript")
+    if (p.includes('in rust') || p === 'rust') {
+      return `🦀 **In Rust:**
+\`\`\`rust
+fn main() {
+    let text = "Arc Desktop";
+    let reversed: String = text.chars().rev().collect();
+    println!("{}", reversed);
+}
+\`\`\``;
+    }
+    if (p.includes('in python') || p === 'python') {
+      return `🐍 **In Python:**
+\`\`\`python
+text = "Arc Desktop"
+print(text[::-1])
+\`\`\``;
+    }
+    if (p.includes('in typescript') || p.includes('in javascript') || p === 'typescript' || p === 'js' || p === 'ts') {
+      return `📘 **In TypeScript:**
+\`\`\`typescript
+const reversed = "Arc Desktop".split('').reverse().join('');
+console.log(reversed);
+\`\`\``;
+    }
+
+    // Contextual follow-up: Summarize
+    if (/^(summarize|summary|tldr|tl;dr|in short|briefly)\b/i.test(p)) {
+      const cleanSnippet = lastAssistantMsg.replace(/[*#`]/g, '').trim().slice(0, 180);
+      return `⚡ **Summary:**\n${cleanSnippet}...`;
+    }
+  }
 
   // 1. Arc capabilities and identity
   if (/^(what can you do|capabilities|features|what do you do)\b/i.test(p)) {
@@ -199,14 +312,60 @@ const GEMINI_AGENTIC_TOOLS = [
 ];
 
 /**
+ * Helper to normalize conversation history for Gemini API multi-turn format.
+ * Guarantees alternating roles (user -> model -> user) and ensures first item is 'user'.
+ */
+function normalizeHistoryForGemini(
+  history: AiChatMessage[] | undefined,
+  currentPrompt: string
+): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
+  const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+
+  if (history && history.length > 0) {
+    // Keep the most recent 14 turns to avoid exceeding prompt bounds while retaining deep conversational memory
+    const recent = history.slice(-14);
+    for (const msg of recent) {
+      if (!msg.text?.trim()) continue;
+      const role: 'user' | 'model' = msg.role === 'assistant' ? 'model' : 'user';
+
+      if (contents.length > 0 && contents[contents.length - 1].role === role) {
+        contents[contents.length - 1].parts[0].text += `\n\n${msg.text.trim()}`;
+      } else {
+        contents.push({
+          role,
+          parts: [{ text: msg.text.trim() }]
+        });
+      }
+    }
+  }
+
+  // Append current prompt
+  if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
+    contents[contents.length - 1].parts[0].text += `\n\n${currentPrompt.trim()}`;
+  } else {
+    contents.push({
+      role: 'user',
+      parts: [{ text: currentPrompt.trim() }]
+    });
+  }
+
+  // Ensure first turn is 'user'
+  if (contents.length > 0 && contents[0].role !== 'user') {
+    contents.shift();
+  }
+
+  return contents;
+}
+
+/**
  * Generate AI Response with Agentic Tool-Execution.
  */
-export async function queryGeminiAi(prompt: string): Promise<string> {
-  const result = await queryAgenticAi(prompt);
+export async function queryGeminiAi(prompt: string, history?: AiChatMessage[]): Promise<string> {
+  const result = await queryAgenticAi(prompt, history);
   return result.text;
 }
 
-export async function queryAgenticAi(prompt: string): Promise<AiQueryResult> {
+export async function queryAgenticAi(prompt: string, history?: AiChatMessage[]): Promise<AiQueryResult> {
   const cleanPrompt = prompt.trim();
   if (!cleanPrompt) return { text: 'Please enter a prompt or instruction.' };
 
@@ -233,23 +392,28 @@ export async function queryAgenticAi(prompt: string): Promise<AiQueryResult> {
   const apiKey = getStoredApiKey();
   const modelName = getStoredModel() || 'gemini-2.5-flash';
 
-  // 2. If API Key is present, call Google Gemini with tool declarations
+  // 2. If API Key is present, call Google Gemini with tool declarations and conversation history
   if (apiKey) {
     try {
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+      const contentsPayload = normalizeHistoryForGemini(history, cleanPrompt);
+
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{
+          systemInstruction: {
             parts: [{
-              text: `You are Arc Desktop AI, an ultra-fast desktop assistant. You have access to tools to create search bangs (shortcuts like 'yt' for YouTube or 'eb' for eBay), bookmarks, and app shortcuts on command. If the user asks you to create or add a shortcut, bang, link, or app, call the appropriate tool. Otherwise, answer clearly, concisely, and formatting with clean Markdown bullet points:\n${cleanPrompt}`
+              text: `You are Arc Desktop AI, an ultra-fast desktop assistant. You have access to tools to create search bangs (shortcuts like 'yt' for YouTube or 'eb' for eBay), bookmarks, and app shortcuts on command.
+If the user asks you to create or add a shortcut, bang, link, or app, call the appropriate tool.
+Remember conversation history and answer follow-up questions accurately and in context. Format responses with clean Markdown bullet points and code blocks.`
             }]
-          }],
+          },
+          contents: contentsPayload,
           tools: GEMINI_AGENTIC_TOOLS,
           generationConfig: {
             temperature: 0.7,
-            maxOutputTokens: 800,
+            maxOutputTokens: 1000,
           }
         })
       });
@@ -324,13 +488,25 @@ export async function queryAgenticAi(prompt: string): Promise<AiQueryResult> {
     }
   }
 
-  // 3. Local Knowledge Engine fallback
-  const localAnswer = getLocalAiAnswer(cleanPrompt);
+  // 3. Local Knowledge Engine fallback with conversation history
+  const localAnswer = getLocalAiAnswer(cleanPrompt, history);
   if (localAnswer) {
     return { text: localAnswer };
   }
 
-  // 4. Default helpful fallback
+  // 4. Contextual fallback when in follow-up mode
+  if (history && history.length > 0) {
+    const lastUserMsg = [...history].reverse().find(m => m.role === 'user')?.text || 'previous topic';
+    return {
+      text: `💡 **Following up on "${lastUserMsg}":**
+• You asked: "${cleanPrompt}".
+• With Arc's local engine, you can ask for code examples, in-depth breakdowns, translations ("in Rust", "in Python"), or tell Arc to *"create a shortcut for this"*.
+
+*Tip: Connect your free Gemini API key in Settings (⚙) to enable unrestricted live multi-turn reasoning.*`
+    };
+  }
+
+  // 5. Default helpful fallback
   return {
     text: `💡 **Arc Intelligence Summary:**
 • **Query:** "${cleanPrompt}"

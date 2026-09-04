@@ -34,7 +34,10 @@ import {
   Compass,
   ArrowDownCircle,
   Download,
-  CheckCircle2
+  CheckCircle2,
+  Send,
+  MessageSquare,
+  RotateCcw
 } from 'lucide-react';
 import {
   CURRENT_APP_VERSION,
@@ -62,7 +65,8 @@ import {
   getStoredApiKey,
   saveStoredApiKey,
   getStoredModel,
-  saveStoredModel
+  saveStoredModel,
+  AiChatMessage
 } from '@/lib/ai-service';
 import {
   SearchBang,
@@ -104,7 +108,10 @@ export default function LauncherPage() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const isTauri = useIsTauri();
   const [aiGenerating, setAiGenerating] = useState(false);
-  const [aiResponse, setAiResponse] = useState<string | null>(null);
+  const [aiMessages, setAiMessages] = useState<AiChatMessage[]>([]);
+  const [followUpInput, setFollowUpInput] = useState('');
+  const followUpInputRef = useRef<HTMLInputElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSimulatedClosed, setIsSimulatedClosed] = useState(false);
 
@@ -498,16 +505,38 @@ export default function LauncherPage() {
     }
   }, [handleDismiss, showToast]);
 
-  // Handle Agentic AI with automated tool execution
-  const askAi = useCallback(async (prompt: string) => {
+  // Handle Agentic AI with automated tool execution & multi-turn follow-up
+  const askAi = useCallback(async (prompt: string, isFollowUp: boolean = false) => {
     const cleanPrompt = prompt.trim();
     if (!cleanPrompt) return;
+
+    const userMsg: AiChatMessage = {
+      id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      role: 'user',
+      text: cleanPrompt,
+      timestamp: Date.now()
+    };
+
+    const historyForQuery = isFollowUp ? aiMessages : [];
+    const baseMessages = isFollowUp ? [...aiMessages, userMsg] : [userMsg];
+    setAiMessages(baseMessages);
     setAiGenerating(true);
-    setAiResponse(null);
+    setFollowUpInput('');
+
+    if (!isFollowUp) {
+      setQuery('');
+    }
 
     try {
-      const res = await queryAgenticAi(cleanPrompt);
-      setAiResponse(res.text);
+      const res = await queryAgenticAi(cleanPrompt, historyForQuery);
+      const assistantMsg: AiChatMessage = {
+        id: `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        role: 'assistant',
+        text: res.text,
+        actionExecuted: res.actionExecuted,
+        timestamp: Date.now()
+      };
+      setAiMessages(prev => [...prev, assistantMsg]);
 
       if (res.actionExecuted) {
         // Sync state from storage if agent created bangs, bookmarks, or apps
@@ -523,15 +552,60 @@ export default function LauncherPage() {
         showToast(res.actionExecuted.summary);
       }
     } catch {
+      let fallbackText = `Query: "${cleanPrompt}". Press Enter to open results in browser.`;
       if (smartEval) {
-        setAiResponse(`${smartEval.result}. ${smartEval.explanation || ''}`);
-      } else {
-        setAiResponse(`Query: "${cleanPrompt}". Press Enter to open results in browser.`);
+        fallbackText = `${smartEval.result}. ${smartEval.explanation || ''}`;
       }
+      setAiMessages(prev => [
+        ...prev,
+        {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          text: fallbackText,
+          timestamp: Date.now()
+        }
+      ]);
     } finally {
       setAiGenerating(false);
+      setTimeout(() => {
+        followUpInputRef.current?.focus();
+        chatScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 60);
     }
-  }, [smartEval, showToast]);
+  }, [aiMessages, smartEval, showToast]);
+
+  const copyFullConversation = useCallback(() => {
+    if (aiMessages.length === 0) return;
+    const transcript = aiMessages
+      .map(m => `### ${m.role === 'user' ? 'User' : 'Arc Intelligence'}\n${m.text}`)
+      .join('\n\n---\n\n');
+    navigator.clipboard.writeText(transcript);
+    showToast('Full conversation copied to clipboard!');
+  }, [aiMessages, showToast]);
+
+  const suggestedFollowUps = useMemo(() => {
+    if (aiMessages.length === 0) return [];
+    const lastUser = [...aiMessages].reverse().find(m => m.role === 'user')?.text.toLowerCase() || '';
+    const lastAi = [...aiMessages].reverse().find(m => m.role === 'assistant')?.text.toLowerCase() || '';
+    const combined = lastUser + ' ' + lastAi;
+
+    const suggestions: string[] = [];
+    if (combined.includes('python') || combined.includes('code') || combined.includes('rust') || combined.includes('function') || combined.includes('git')) {
+      if (!combined.includes('rust')) suggestions.push('In Rust');
+      if (!combined.includes('python')) suggestions.push('In Python');
+      suggestions.push('Explain step-by-step');
+      suggestions.push('Show practical example');
+    } else if (combined.includes('shortcut') || combined.includes('bang') || combined.includes('search')) {
+      suggestions.push('Create shortcut for this');
+      suggestions.push('Explain how bangs work');
+      suggestions.push('Give another example');
+    } else {
+      suggestions.push('Explain in more detail');
+      suggestions.push('Give an example');
+      suggestions.push('Summarize key points');
+    }
+    return suggestions.slice(0, 3);
+  }, [aiMessages]);
 
   // Build Results List
   const items = useMemo<LauncherItem[]>(() => {
@@ -552,7 +626,7 @@ export default function LauncherPage() {
           category: 'Agent Action',
           badge: 'Agentic AI',
           action: () => {
-            askAi(query);
+            askAi(query, aiMessages.length > 0);
           }
         });
       }
@@ -725,16 +799,19 @@ export default function LauncherPage() {
 
     // 7. AI Query & Web Search when user types
     if (q) {
+      const isFollowUp = aiMessages.length > 0;
       list.push({
         id: 'ai-prompt',
         type: 'ai',
-        title: `Ask Arc Intelligence: "${query}"`,
-        subtitle: 'Get inline AI answers or execute agent actions (Shift + Enter)',
+        title: isFollowUp ? `Ask AI Follow-Up: "${query}"` : `Ask Arc Intelligence: "${query}"`,
+        subtitle: isFollowUp
+          ? 'Continue current conversation with context (Shift + Enter)'
+          : 'Get inline AI answers or execute agent actions (Shift + Enter)',
         icon: Sparkles,
-        category: 'Intelligence',
-        badge: 'Gemini',
+        category: isFollowUp ? 'AI Follow-Up' : 'Intelligence',
+        badge: isFollowUp ? 'Follow-Up' : 'Gemini',
         action: () => {
-          askAi(query);
+          askAi(query, isFollowUp);
         }
       });
 
@@ -753,7 +830,7 @@ export default function LauncherPage() {
     }
 
     return list;
-  }, [query, smartEval, askAi, handleDismiss, showToast, favorites, installedApps, appVisibility, executeAppLaunch, searchBangs]);
+  }, [query, smartEval, askAi, handleDismiss, showToast, favorites, installedApps, appVisibility, executeAppLaunch, searchBangs, aiMessages]);
 
   const activeIndex = items.length > 0 ? Math.min(selectedIndex, items.length - 1) : 0;
 
@@ -771,7 +848,7 @@ export default function LauncherPage() {
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (e.shiftKey && query.trim()) {
-        askAi(query);
+        askAi(query, aiMessages.length > 0);
       } else if (items[activeIndex]) {
         handleItemSelect(items[activeIndex]);
       }
@@ -1539,72 +1616,216 @@ export default function LauncherPage() {
                 )}
               </div>
 
-              {/* AI Response Panel */}
-              {(aiGenerating || aiResponse) && (
-                <div className="p-3.5 bg-sky-950/30 border-b border-sky-800/40 flex items-start gap-3 animate-in fade-in slide-in-from-top-1">
-                  <Sparkles className="w-4 h-4 text-sky-400 shrink-0 mt-0.5 animate-pulse" />
-                  <div className="flex-1 text-xs sm:text-sm text-slate-200 leading-relaxed min-w-0">
-                    {aiGenerating ? (
-                      <div className="flex items-center gap-2 text-sky-300">
-                        <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
-                        <span>Arc Agent Thinking & Executing...</span>
+              {/* Multi-Turn AI Conversation & Follow-Up Panel */}
+              {(aiGenerating || aiMessages.length > 0) && (
+                <div className="p-3.5 bg-gradient-to-b from-sky-950/40 to-slate-900/40 border-b border-sky-800/40 animate-in fade-in slide-in-from-top-1 flex flex-col gap-2.5">
+                  {/* Conversation Header Bar */}
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
+                    <div className="flex items-center gap-2">
+                      <div className="w-5 h-5 rounded-md bg-sky-500/20 border border-sky-500/30 flex items-center justify-center">
+                        <Sparkles className={`w-3 h-3 text-sky-400 ${aiGenerating ? 'animate-spin' : ''}`} />
                       </div>
-                    ) : (
-                      <div>
-                        <div className="font-semibold text-sky-400 text-[11px] uppercase tracking-wider mb-1 flex items-center justify-between">
-                          <span className="flex items-center gap-1.5">
-                            <Bot className="w-3.5 h-3.5" />
-                            <span>Arc Agentic Intelligence</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-white tracking-wide">
+                          Arc Desktop Intelligence
+                        </span>
+                        {aiMessages.length > 2 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 font-medium border border-sky-500/30">
+                            {Math.ceil(aiMessages.length / 2)} turns
                           </span>
-                        </div>
-                        <div className="whitespace-pre-line text-slate-100 font-normal">
-                          {aiResponse}
-                        </div>
-                        <div className="mt-2.5 flex items-center gap-2 flex-wrap">
-                          <button
-                            onClick={() => {
-                              if (aiResponse) {
-                                navigator.clipboard.writeText(aiResponse);
-                                showToast('AI response copied!');
-                              }
-                            }}
-                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-xs font-medium transition flex items-center gap-1 border border-slate-700"
-                          >
-                            <Copy className="w-3 h-3" />
-                            <span>Copy Answer</span>
-                          </button>
+                        )}
+                      </div>
+                    </div>
 
-                          <button
-                            onClick={() => {
-                              setShowSettings(true);
-                              setSettingsTab('bangs');
-                            }}
-                            className="px-2.5 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 rounded-md text-xs font-medium transition flex items-center gap-1 border border-sky-500/30"
-                          >
-                            <Compass className="w-3 h-3" />
-                            <span>View All Bangs</span>
-                          </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAiMessages([]);
+                          setFollowUpInput('');
+                          showToast('Conversation cleared. Ready for new topic.');
+                        }}
+                        title="Start New Chat"
+                        className="px-2 py-1 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white rounded-md text-[11px] font-medium transition flex items-center gap-1 border border-slate-700/60"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>New Chat</span>
+                      </button>
 
-                          <button
-                            onClick={() => {
-                              setShowSettings(true);
-                              setSettingsTab('ai');
-                            }}
-                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-xs font-medium transition flex items-center gap-1 border border-slate-700"
-                          >
-                            <Key className="w-3 h-3" />
-                            <span>AI Settings</span>
-                          </button>
+                      <button
+                        type="button"
+                        onClick={copyFullConversation}
+                        title="Copy Entire Conversation"
+                        className="px-2 py-1 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white rounded-md text-[11px] font-medium transition flex items-center gap-1 border border-slate-700/60"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>Copy Thread</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAiMessages([]);
+                          setFollowUpInput('');
+                        }}
+                        className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800/80 transition ml-1"
+                        title="Close AI Panel"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Messages Stream */}
+                  <div className="max-h-[260px] overflow-y-auto space-y-3 pr-1 divide-y divide-slate-800/30">
+                    {aiMessages.map((msg, idx) => {
+                      if (msg.role === 'user') {
+                        return (
+                          <div key={msg.id || `msg-${idx}`} className="pt-2 first:pt-0 flex justify-end">
+                            <div className="max-w-[85%] bg-slate-800/90 text-slate-100 rounded-2xl rounded-tr-sm px-3.5 py-2 text-xs leading-relaxed border border-slate-700/60 shadow-sm">
+                              <div className="text-[10px] font-medium text-sky-400/90 mb-0.5 flex items-center justify-between gap-2">
+                                <span>You</span>
+                                <span className="text-[9px] text-slate-500 font-mono">
+                                  {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </div>
+                              <div className="whitespace-pre-wrap font-normal text-slate-100">{msg.text}</div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div key={msg.id || `msg-${idx}`} className="pt-2 first:pt-0 flex items-start gap-2.5">
+                          <div className="w-6 h-6 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center shrink-0 mt-0.5">
+                            <Bot className="w-3.5 h-3.5 text-sky-400" />
+                          </div>
+                          <div className="flex-1 min-w-0 bg-slate-900/60 rounded-2xl rounded-tl-sm p-3 border border-slate-800/80 text-xs text-slate-200 leading-relaxed space-y-2">
+                            <div className="whitespace-pre-line text-slate-100 font-normal selection:bg-sky-500/30">
+                              {msg.text}
+                            </div>
+
+                            {msg.actionExecuted && (
+                              <div className="p-2 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-[11px] text-emerald-300 flex items-center gap-2">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                <span>{msg.actionExecuted.summary}</span>
+                              </div>
+                            )}
+
+                            <div className="pt-1 flex items-center gap-2 text-[10px] text-slate-400">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(msg.text);
+                                  showToast('Answer copied!');
+                                }}
+                                className="hover:text-slate-200 flex items-center gap-1 transition px-1.5 py-0.5 rounded hover:bg-slate-800/70 border border-transparent hover:border-slate-700"
+                              >
+                                <Copy className="w-2.5 h-2.5" />
+                                <span>Copy</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {aiGenerating && (
+                      <div className="pt-2 flex items-start gap-2.5 animate-in fade-in">
+                        <div className="w-6 h-6 rounded-lg bg-sky-500/20 border border-sky-500/30 flex items-center justify-center shrink-0 mt-0.5 animate-pulse">
+                          <Sparkles className="w-3.5 h-3.5 text-sky-400 animate-spin" />
+                        </div>
+                        <div className="bg-slate-900/60 rounded-2xl rounded-tl-sm px-3.5 py-2.5 border border-sky-800/40 text-xs text-sky-300 flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
+                          <span>Arc Agent Thinking & Reasoning...</span>
                         </div>
                       </div>
                     )}
+
+                    <div ref={chatScrollRef} />
                   </div>
-                  <button
-                    onClick={() => setAiResponse(null)}
-                    className="text-slate-400 hover:text-white p-1"
+
+                  {/* Contextual Quick Follow-Up Chips */}
+                  {!aiGenerating && suggestedFollowUps.length > 0 && (
+                    <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                      <span className="text-[10px] text-slate-400 font-medium mr-1">Suggestions:</span>
+                      {suggestedFollowUps.map((suggestion, sIdx) => (
+                        <button
+                          key={sIdx}
+                          type="button"
+                          onClick={() => askAi(suggestion, true)}
+                          className="px-2.5 py-1 rounded-full bg-slate-800/80 hover:bg-sky-500/20 text-slate-300 hover:text-sky-200 text-[11px] font-medium border border-slate-700/60 hover:border-sky-500/40 transition flex items-center gap-1"
+                        >
+                          <span>{suggestion}</span>
+                          <ChevronRight className="w-2.5 h-2.5 opacity-60" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Follow-Up Input Box */}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (followUpInput.trim() && !aiGenerating) {
+                        askAi(followUpInput, true);
+                      }
+                    }}
+                    className="pt-2 border-t border-slate-800/60 flex items-center gap-2"
                   >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+                    <div className="relative flex-1">
+                      <MessageSquare className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        ref={followUpInputRef}
+                        type="text"
+                        value={followUpInput}
+                        onChange={(e) => setFollowUpInput(e.target.value)}
+                        placeholder="Ask a follow-up question... (Enter to send)"
+                        disabled={aiGenerating}
+                        className="w-full bg-slate-900/90 border border-slate-700/80 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500/30 transition disabled:opacity-50"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={!followUpInput.trim() || aiGenerating}
+                      className="px-3 py-1.5 bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:hover:bg-sky-500 text-slate-950 font-semibold rounded-lg text-xs transition flex items-center gap-1.5 shadow-sm"
+                    >
+                      <span>Send</span>
+                      <Send className="w-3 h-3" />
+                    </button>
+                  </form>
+
+                  {/* Settings quick links */}
+                  <div className="flex items-center justify-between text-[11px] text-slate-400 pt-0.5">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowSettings(true);
+                          setSettingsTab('bangs');
+                        }}
+                        className="hover:text-sky-300 flex items-center gap-1 transition"
+                      >
+                        <Compass className="w-3 h-3" />
+                        <span>Search Bangs</span>
+                      </button>
+                      <span>•</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowSettings(true);
+                          setSettingsTab('ai');
+                        }}
+                        className="hover:text-sky-300 flex items-center gap-1 transition"
+                      >
+                        <Key className="w-3 h-3" />
+                        <span>AI Settings</span>
+                      </button>
+                    </div>
+                    <span className="text-[10px] text-slate-500">
+                      Press Shift+Enter or type below to follow up
+                    </span>
+                  </div>
                 </div>
               )}
 
