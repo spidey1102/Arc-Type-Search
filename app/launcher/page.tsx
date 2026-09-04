@@ -13,6 +13,7 @@ import {
   Sparkles,
   ExternalLink,
   ArrowRight,
+  ArrowLeft,
   Command,
   X,
   Laptop,
@@ -24,14 +25,15 @@ import {
   VolumeX,
   RotateCw,
   Copy,
-  ChevronRight
+  ChevronRight,
+  Trash2
 } from 'lucide-react';
 import { useIsTauri, hideDesktopWindow, openDesktopUrl, POPULAR_DESKTOP_APPS } from '@/lib/desktop-ipc';
 import { evaluateSmartQuery, EvaluationResult } from '@/lib/smart-evaluator';
 
 interface LauncherItem {
   id: string;
-  type: 'app' | 'calc' | 'search' | 'url' | 'system' | 'ai';
+  type: 'app' | 'calc' | 'search' | 'url' | 'system' | 'ai' | 'url' | 'copy';
   title: string;
   subtitle: string;
   icon: any;
@@ -39,6 +41,13 @@ interface LauncherItem {
   badge?: string;
   category: string;
 }
+
+type Favorite = {
+  id: string;
+  type: 'url' | 'copy';
+  title: string;
+  value: string;
+};
 
 export default function LauncherPage() {
   const [query, setQuery] = useState('');
@@ -49,12 +58,42 @@ export default function LauncherPage() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSimulatedClosed, setIsSimulatedClosed] = useState(false);
 
+  const [favorites, setFavorites] = useState<Favorite[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
+  const [newFavTitle, setNewFavTitle] = useState('');
+  const [newFavType, setNewFavType] = useState<'url' | 'copy'>('url');
+  const [newFavValue, setNewFavValue] = useState('');
+
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    const stored = localStorage.getItem('arc-favorites');
+    if (stored) {
+      try { setFavorites(JSON.parse(stored)); } catch (e) {}
+    }
+  }, []);
+
+  const saveFavorites = (newFavs: Favorite[]) => {
+    setFavorites(newFavs);
+    localStorage.setItem('arc-favorites', JSON.stringify(newFavs));
+  };
+
+  const handleAddFavorite = () => {
+    if (!newFavTitle || !newFavValue) return;
+    saveFavorites([...favorites, { id: Date.now().toString(), type: newFavType, title: newFavTitle, value: newFavValue }]);
+    setNewFavTitle('');
+    setNewFavValue('');
+    showToast('Favorite added!');
+  };
+
+  const handleDeleteFavorite = (id: string) => {
+    saveFavorites(favorites.filter(f => f.id !== id));
+  };
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -92,13 +131,18 @@ export default function LauncherPage() {
 
       if (e.key === 'Escape') {
         e.preventDefault();
-        handleDismiss();
+        if (showSettings) {
+          setShowSettings(false);
+          setTimeout(() => inputRef.current?.focus(), 50);
+        } else {
+          handleDismiss();
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isSimulatedClosed, isTauri, handleDismiss]);
+  }, [isSimulatedClosed, isTauri, handleDismiss, showSettings]);
 
   // Instant smart calculation & equation evaluator
   const smartEval = useMemo<EvaluationResult | null>(() => {
@@ -143,6 +187,30 @@ export default function LauncherPage() {
   const items = useMemo<LauncherItem[]>(() => {
     const list: LauncherItem[] = [];
     const q = query.trim().toLowerCase();
+
+    // 0. Inject User Favorites
+    favorites.forEach(fav => {
+      if (!q || fav.title.toLowerCase().includes(q) || fav.value.toLowerCase().includes(q)) {
+        list.push({
+          id: `fav-${fav.id}`,
+          type: fav.type,
+          title: fav.title,
+          subtitle: fav.type === 'url' ? `Open: ${fav.value}` : `Copy: ${fav.value}`,
+          icon: fav.type === 'url' ? Globe : Copy,
+          category: 'Favorites',
+          badge: fav.type === 'url' ? 'URL' : 'Clipboard',
+          action: () => {
+            if (fav.type === 'url') {
+              openDesktopUrl(fav.value);
+            } else {
+              navigator.clipboard.writeText(fav.value);
+              showToast(`Copied "${fav.title}" to clipboard!`);
+              handleDismiss();
+            }
+          }
+        });
+      }
+    });
 
     // 1. Instant Equation or Math calculation result
     if (smartEval) {
@@ -212,6 +280,7 @@ export default function LauncherPage() {
 
     // 4. Quick System Commands
     const systemCommands = [
+      { id: 'sys-settings', title: 'Manage Favorites', subtitle: 'Add custom URLs and clipboard snippets', icon: Settings, command: 'settings' },
       { id: 'sys-lock', title: 'Lock Screen', subtitle: 'Lock current desktop session', icon: Lock, command: 'lock' },
       { id: 'sys-mute', title: 'Mute / Unmute Audio', subtitle: 'Toggle master system volume', icon: VolumeX, command: 'mute' },
       { id: 'sys-downloads', title: 'Open Downloads Folder', subtitle: 'Reveal files in Finder / Explorer', icon: FolderOpen, command: 'downloads' },
@@ -229,8 +298,13 @@ export default function LauncherPage() {
           category: 'System',
           badge: 'System',
           action: () => {
-            showToast(`Executed: ${cmd.title}`);
-            handleDismiss();
+            if (cmd.id === 'sys-settings') {
+              setShowSettings(true);
+              setQuery('');
+            } else {
+              showToast(`Executed: ${cmd.title}`);
+              handleDismiss();
+            }
           }
         });
       }
@@ -266,7 +340,7 @@ export default function LauncherPage() {
     }
 
     return list;
-  }, [query, smartEval, askAi, handleDismiss, showToast]);
+  }, [query, smartEval, askAi, handleDismiss, showToast, favorites]);
 
   const activeIndex = items.length > 0 ? Math.min(selectedIndex, items.length - 1) : 0;
 
@@ -324,13 +398,16 @@ export default function LauncherPage() {
           </div>
 
           <div className="flex items-center gap-3">
-            <Link
-              href="/"
-              className="hover:text-white transition flex items-center gap-1 text-[11px]"
+            <button
+              onClick={() => {
+                setShowSettings(!showSettings);
+                if (showSettings) setTimeout(() => inputRef.current?.focus(), 50);
+              }}
+              className="p-1 rounded-md hover:bg-slate-800 text-slate-400 hover:text-white transition"
+              title="Manage Favorites"
             >
-              <span>App Portal</span>
-              <ArrowRight className="w-3 h-3" />
-            </Link>
+              <Settings className="w-4 h-4" />
+            </button>
             <button
               onClick={handleDismiss}
               className="p-1 rounded-md hover:bg-slate-800 text-slate-400 hover:text-white transition"
@@ -342,169 +419,252 @@ export default function LauncherPage() {
         </div>
 
         {/* Command Card Container */}
-        <div className="bg-slate-900/90 border border-slate-700/70 rounded-2xl shadow-2xl shadow-black/80 backdrop-blur-2xl overflow-hidden flex flex-col transition-all">
-          {/* Input Bar */}
-          <div className="p-4 flex items-center gap-3.5 border-b border-slate-800/80 bg-slate-950/40">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-400 to-indigo-600 p-0.5 shadow-md shadow-sky-500/10 shrink-0">
-              <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-                <Search className="w-4 h-4 text-sky-400" />
+        <div className="bg-slate-900/90 border border-slate-700/70 rounded-2xl shadow-2xl shadow-black/80 backdrop-blur-2xl overflow-hidden flex flex-col transition-all relative">
+          {showSettings ? (
+            <div className="flex flex-col h-[480px]">
+              <div className="p-4 flex items-center gap-3 border-b border-slate-800/80 bg-slate-950/40">
+                <button
+                  onClick={() => {
+                    setShowSettings(false);
+                    setTimeout(() => inputRef.current?.focus(), 50);
+                  }}
+                  className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-white font-semibold flex-1 tracking-tight">Manage Favorites</h2>
+              </div>
+              
+              <div className="p-4 overflow-y-auto flex-1 space-y-6">
+                 {/* Add Form */}
+                 <div className="space-y-3 p-4 bg-slate-800/30 rounded-xl border border-slate-700/50">
+                   <h3 className="text-sm font-medium text-slate-300">Add New Shortcut</h3>
+                   <input
+                     className="w-full bg-slate-950/50 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:border-sky-500 transition-colors placeholder:text-slate-500"
+                     placeholder="Title (e.g. Work Email, Dashboard)"
+                     value={newFavTitle}
+                     onChange={e=>setNewFavTitle(e.target.value)}
+                   />
+                   <div className="flex flex-col sm:flex-row gap-3">
+                     <select
+                       className="bg-slate-950/50 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:border-sky-500 transition-colors w-full sm:w-1/3"
+                       value={newFavType}
+                       onChange={e=>setNewFavType(e.target.value as 'url'|'copy')}
+                     >
+                       <option value="url">Open URL</option>
+                       <option value="copy">Copy Text</option>
+                     </select>
+                     <input
+                       className="flex-1 bg-slate-950/50 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:border-sky-500 transition-colors placeholder:text-slate-500"
+                       placeholder={newFavType === 'url' ? 'https://...' : 'Text to copy to clipboard...'}
+                       value={newFavValue}
+                       onChange={e=>setNewFavValue(e.target.value)}
+                     />
+                   </div>
+                   <button
+                     onClick={handleAddFavorite}
+                     disabled={!newFavTitle || !newFavValue}
+                     className="w-full bg-sky-500 hover:bg-sky-400 disabled:opacity-50 disabled:hover:bg-sky-500 text-slate-950 font-semibold py-2.5 rounded-lg text-sm transition-all"
+                   >
+                     Save Favorite
+                   </button>
+                 </div>
+                 
+                 {/* List */}
+                 <div className="space-y-2 pb-4">
+                   <h3 className="text-sm font-medium text-slate-300 px-1">Your Saved Favorites</h3>
+                   {favorites.length === 0 && (
+                     <div className="text-sm text-slate-500 px-1 py-4 text-center border border-dashed border-slate-700/50 rounded-xl">
+                       No favorites added yet. Add one above!
+                     </div>
+                   )}
+                   {favorites.map(f => (
+                     <div key={f.id} className="flex items-center justify-between p-3 bg-slate-800/40 rounded-xl border border-slate-700/50 group transition-all hover:bg-slate-800/60">
+                       <div className="min-w-0 flex-1 pr-4">
+                         <div className="text-sm text-white font-medium flex items-center gap-2 truncate">
+                           {f.type === 'url' ? <Globe className="w-3.5 h-3.5 text-sky-400" /> : <Copy className="w-3.5 h-3.5 text-emerald-400" />}
+                           {f.title}
+                         </div>
+                         <div className="text-xs text-slate-400 truncate mt-1">{f.value}</div>
+                       </div>
+                       <button
+                         onClick={() => handleDeleteFavorite(f.id)}
+                         className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors shrink-0"
+                         title="Delete favorite"
+                       >
+                         <Trash2 className="w-4 h-4" />
+                       </button>
+                     </div>
+                   ))}
+                 </div>
               </div>
             </div>
-
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={e => {
-                setQuery(e.target.value);
-                setSelectedIndex(0);
-              }}
-              onKeyDown={handleInputKeyDown}
-              placeholder="Search apps, type a calculation (e.g. 140 * 12), or ask AI..."
-              className="w-full bg-transparent text-base sm:text-lg text-white placeholder-slate-500 focus:outline-none tracking-tight font-normal"
-              autoFocus
-            />
-
-            {query && (
-              <button
-                onClick={() => setQuery('')}
-                className="p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-
-          {/* AI Response Panel (if active) */}
-          {(aiGenerating || aiResponse) && (
-            <div className="p-4 bg-sky-950/20 border-b border-sky-800/30 flex items-start gap-3">
-              <Sparkles className="w-5 h-5 text-sky-400 shrink-0 mt-0.5 animate-pulse" />
-              <div className="flex-1 text-xs sm:text-sm text-slate-200 leading-relaxed">
-                {aiGenerating ? (
-                  <div className="flex items-center gap-2 text-sky-300">
-                    <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
-                    <span>Synthesizing answer with Gemini...</span>
+          ) : (
+            <>
+              {/* Input Bar */}
+              <div className="p-4 flex items-center gap-3.5 border-b border-slate-800/80 bg-slate-950/40">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-400 to-indigo-600 p-0.5 shadow-md shadow-sky-500/10 shrink-0">
+                  <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
+                    <Search className="w-4 h-4 text-sky-400" />
                   </div>
-                ) : (
-                  <div>
-                    <div className="font-semibold text-sky-400 text-xs uppercase tracking-wider mb-1">
-                      Arc Intelligence
-                    </div>
-                    <p>{aiResponse}</p>
-                  </div>
+                </div>
+
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={query}
+                  onChange={e => {
+                    setQuery(e.target.value);
+                    setSelectedIndex(0);
+                  }}
+                  onKeyDown={handleInputKeyDown}
+                  placeholder="Search apps, type a calculation (e.g. 140 * 12), or ask AI..."
+                  className="w-full bg-transparent text-base sm:text-lg text-white placeholder-slate-500 focus:outline-none tracking-tight font-normal"
+                  autoFocus
+                />
+
+                {query && (
+                  <button
+                    onClick={() => setQuery('')}
+                    className="p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 )}
               </div>
-              <button
-                onClick={() => setAiResponse(null)}
-                className="text-slate-400 hover:text-white p-1"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
 
-          {/* Results List */}
-          <div
-            ref={listRef}
-            className="max-h-[380px] overflow-y-auto p-2 space-y-1 divide-y divide-slate-800/40"
-          >
-            {items.length === 0 ? (
-              <div className="py-12 text-center text-slate-500 text-sm">
-                No matching apps or commands found for &quot;{query}&quot;.
-              </div>
-            ) : (
-              items.map((item, idx) => {
-                const isSelected = idx === activeIndex;
-                const IconComponent = item.icon;
-
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => handleItemSelect(item)}
-                    onMouseEnter={() => setSelectedIndex(idx)}
-                    className={`pt-1 first:pt-0 cursor-pointer group`}
+              {/* AI Response Panel (if active) */}
+              {(aiGenerating || aiResponse) && (
+                <div className="p-4 bg-sky-950/20 border-b border-sky-800/30 flex items-start gap-3">
+                  <Sparkles className="w-5 h-5 text-sky-400 shrink-0 mt-0.5 animate-pulse" />
+                  <div className="flex-1 text-xs sm:text-sm text-slate-200 leading-relaxed">
+                    {aiGenerating ? (
+                      <div className="flex items-center gap-2 text-sky-300">
+                        <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
+                        <span>Synthesizing answer with Gemini...</span>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="font-semibold text-sky-400 text-xs uppercase tracking-wider mb-1">
+                          Arc Intelligence
+                        </div>
+                        <p>{aiResponse}</p>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => setAiResponse(null)}
+                    className="text-slate-400 hover:text-white p-1"
                   >
-                    <div
-                      className={`px-3 py-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
-                        isSelected
-                          ? 'bg-sky-500/15 border border-sky-500/30 text-white'
-                          : 'hover:bg-slate-800/50 text-slate-300'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {/* Results List */}
+              <div
+                ref={listRef}
+                className="max-h-[380px] overflow-y-auto p-2 space-y-1 divide-y divide-slate-800/40"
+              >
+                {items.length === 0 ? (
+                  <div className="py-12 text-center text-slate-500 text-sm">
+                    No matching apps or commands found for &quot;{query}&quot;.
+                  </div>
+                ) : (
+                  items.map((item, idx) => {
+                    const isSelected = idx === activeIndex;
+                    const IconComponent = item.icon;
+
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => handleItemSelect(item)}
+                        onMouseEnter={() => setSelectedIndex(idx)}
+                        className={`pt-1 first:pt-0 cursor-pointer group`}
+                      >
                         <div
-                          className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+                          className={`px-3 py-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
                             isSelected
-                              ? 'bg-sky-500 text-slate-950 shadow-sm'
-                              : 'bg-slate-800 text-slate-400 group-hover:text-slate-200'
+                              ? 'bg-sky-500/15 border border-sky-500/30 text-white'
+                              : 'hover:bg-slate-800/50 text-slate-300'
                           }`}
                         >
-                          <IconComponent className="w-4 h-4" />
-                        </div>
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div
+                              className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+                                isSelected
+                                  ? 'bg-sky-500 text-slate-950 shadow-sm'
+                                  : 'bg-slate-800 text-slate-400 group-hover:text-slate-200'
+                              }`}
+                            >
+                              <IconComponent className="w-4 h-4" />
+                            </div>
 
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold truncate tracking-tight text-white">
-                            {item.title}
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold truncate tracking-tight text-white">
+                                {item.title}
+                              </div>
+                              <div className="text-xs text-slate-400 truncate">
+                                {item.subtitle}
+                              </div>
+                            </div>
                           </div>
-                          <div className="text-xs text-slate-400 truncate">
-                            {item.subtitle}
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {item.badge && (
+                              <span
+                                className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-medium ${
+                                  isSelected
+                                    ? 'bg-sky-400/20 text-sky-300 border border-sky-400/30'
+                                    : 'bg-slate-800 text-slate-400'
+                                }`}
+                              >
+                                {item.badge}
+                              </span>
+                            )}
+                            <ChevronRight
+                              className={`w-4 h-4 text-slate-500 transition-transform ${
+                                isSelected ? 'translate-x-0.5 text-sky-400' : 'opacity-0'
+                              }`}
+                            />
                           </div>
                         </div>
                       </div>
+                    );
+                  })
+                )}
+              </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        {item.badge && (
-                          <span
-                            className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-medium ${
-                              isSelected
-                                ? 'bg-sky-400/20 text-sky-300 border border-sky-400/30'
-                                : 'bg-slate-800 text-slate-400'
-                            }`}
-                          >
-                            {item.badge}
-                          </span>
-                        )}
-                        <ChevronRight
-                          className={`w-4 h-4 text-slate-500 transition-transform ${
-                            isSelected ? 'translate-x-0.5 text-sky-400' : 'opacity-0'
-                          }`}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
+              {/* Footer Bar */}
+              <div className="px-4 py-2.5 bg-slate-950/60 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
+                <div className="flex items-center gap-4">
+                  <span className="flex items-center gap-1.5">
+                    <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
+                      ↑↓
+                    </kbd>
+                    <span>Navigate</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
+                      Enter
+                    </kbd>
+                    <span>Select</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
+                      Esc
+                    </kbd>
+                    <span>Dismiss</span>
+                  </span>
+                </div>
 
-          {/* Footer Bar */}
-          <div className="px-4 py-2.5 bg-slate-950/60 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
-            <div className="flex items-center gap-4">
-              <span className="flex items-center gap-1.5">
-                <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
-                  ↑↓
-                </kbd>
-                <span>Navigate</span>
-              </span>
-              <span className="flex items-center gap-1.5">
-                <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
-                  Enter
-                </kbd>
-                <span>Select</span>
-              </span>
-              <span className="flex items-center gap-1.5">
-                <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
-                  Esc
-                </kbd>
-                <span>Dismiss</span>
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <Zap className="w-3.5 h-3.5 text-sky-400" />
-              <span>Arc Desktop v0.1.0</span>
-            </div>
-          </div>
+                <div className="flex items-center gap-2">
+                  <Zap className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Arc Desktop v0.1.0</span>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
