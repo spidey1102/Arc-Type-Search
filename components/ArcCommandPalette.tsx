@@ -20,6 +20,7 @@ import {
   History,
   Clock
 } from 'lucide-react';
+import { evaluateSmartQuery, EvaluationResult } from '@/lib/smart-evaluator';
 
 export interface TabItem {
   id: string;
@@ -212,22 +213,6 @@ export function ArcCommandPalette({
     setTimeout(() => setCopiedNotification(null), 2000);
   };
 
-  const evaluateMath = (text: string): number | null => {
-    try {
-      const sanitized = text.replace(/x/gi, '*').replace(/%/g, '*0.01').trim();
-      if (!/^[0-9+\-*/().\s]+$/.test(sanitized)) return null;
-      if (!/\d/.test(sanitized)) return null;
-      // evaluate basic arithmetic
-      const result = new Function(`'use strict'; return (${sanitized})`)();
-      if (typeof result === 'number' && !isNaN(result) && isFinite(result)) {
-        return Math.round(result * 100000) / 100000;
-      }
-    } catch {
-      return null;
-    }
-    return null;
-  };
-
   const trimmed = query.trim();
 
   // Compute inline Omnibox ghost autofill suggestion
@@ -282,20 +267,20 @@ export function ArcCommandPalette({
 
   const items: PaletteItem[] = [];
 
-  // 1. Math calculation check
+  // 1. Math calculation & Equation solver check
   if (trimmed) {
-    const math = evaluateMath(trimmed);
-    if (math !== null) {
+    const smartEval = evaluateSmartQuery(trimmed);
+    if (smartEval !== null) {
       items.push({
         id: 'calc-result',
         type: 'calc',
-        title: `= ${math}`,
-        subtitle: `Calculated from: ${trimmed}`,
+        title: smartEval.result,
+        subtitle: smartEval.explanation || `Calculated from: ${trimmed}`,
         iconType: 'calc',
-        badge: 'Copy Result',
+        badge: smartEval.badge,
         action: () => {
-          navigator.clipboard.writeText(String(math));
-          showToast(`Copied ${math} to clipboard!`);
+          navigator.clipboard.writeText(smartEval.result);
+          showToast(`Copied ${smartEval.result} to clipboard!`);
           onClose();
         }
       });

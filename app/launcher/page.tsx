@@ -27,6 +27,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { useIsTauri, hideDesktopWindow, openDesktopUrl, POPULAR_DESKTOP_APPS } from '@/lib/desktop-ipc';
+import { evaluateSmartQuery, EvaluationResult } from '@/lib/smart-evaluator';
 
 interface LauncherItem {
   id: string;
@@ -99,25 +100,13 @@ export default function LauncherPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isSimulatedClosed, isTauri, handleDismiss]);
 
-  // Math calculation evaluator
-  const evaluatedMath = useMemo(() => {
-    const trimmed = query.trim();
-    if (!trimmed) return null;
-    const sanitized = trimmed.replace(/x/gi, '*').replace(/%/g, '*0.01').trim();
-    if (!/^[0-9+\-*/().\s]+$/.test(sanitized) || !/\d/.test(sanitized)) return null;
-    try {
-      const res = new Function(`'use strict'; return (${sanitized})`)();
-      if (typeof res === 'number' && !isNaN(res) && isFinite(res)) {
-        return Math.round(res * 1000000) / 1000000;
-      }
-    } catch {
-      return null;
-    }
-    return null;
+  // Instant smart calculation & equation evaluator
+  const smartEval = useMemo<EvaluationResult | null>(() => {
+    return evaluateSmartQuery(query);
   }, [query]);
 
   // Handle AI question
-  const askAi = async (prompt: string) => {
+  const askAi = useCallback(async (prompt: string) => {
     setAiGenerating(true);
     setAiResponse(null);
     try {
@@ -132,33 +121,42 @@ export default function LauncherPage() {
         const data = await res.json();
         setAiResponse(data.text || 'No answer generated.');
       } else {
-        setAiResponse(`Search Web: "${prompt}" - Instant intelligence ready.`);
+        // If smartEval is available, use its explanation
+        if (smartEval) {
+          setAiResponse(`${smartEval.result}. ${smartEval.explanation || ''}`);
+        } else {
+          setAiResponse(`Search Web: "${prompt}" (Press Enter to open in browser)`);
+        }
       }
     } catch {
-      setAiResponse(`Search Web: "${prompt}" (Open in browser)`);
+      if (smartEval) {
+        setAiResponse(`${smartEval.result}. ${smartEval.explanation || ''}`);
+      } else {
+        setAiResponse(`Search Web: "${prompt}" (Open in browser)`);
+      }
     } finally {
       setAiGenerating(false);
     }
-  };
+  }, [smartEval]);
 
   // Build items list based on query
   const items = useMemo<LauncherItem[]>(() => {
     const list: LauncherItem[] = [];
     const q = query.trim().toLowerCase();
 
-    // 1. Math calculation result
-    if (evaluatedMath !== null) {
+    // 1. Instant Equation or Math calculation result
+    if (smartEval) {
       list.push({
-        id: 'calc-result',
+        id: 'smart-eval-result',
         type: 'calc',
-        title: `= ${evaluatedMath}`,
-        subtitle: `Calculation result for "${query}" (Press Enter to copy)`,
+        title: smartEval.result,
+        subtitle: smartEval.explanation || `Result for "${query}" (Press Enter to copy)`,
         icon: Calculator,
         category: 'Calculation',
-        badge: 'Math',
+        badge: smartEval.badge,
         action: () => {
-          navigator.clipboard.writeText(evaluatedMath.toString());
-          showToast(`Copied ${evaluatedMath} to clipboard!`);
+          navigator.clipboard.writeText(smartEval.result);
+          showToast(`Copied ${smartEval.result} to clipboard!`);
           handleDismiss();
         }
       });
@@ -268,7 +266,7 @@ export default function LauncherPage() {
     }
 
     return list;
-  }, [query, evaluatedMath, handleDismiss, showToast]);
+  }, [query, smartEval, askAi, handleDismiss, showToast]);
 
   const activeIndex = items.length > 0 ? Math.min(selectedIndex, items.length - 1) : 0;
 
