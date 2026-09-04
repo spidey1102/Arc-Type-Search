@@ -290,12 +290,12 @@ export default function LauncherPage() {
   };
 
   return (
-    <div className="w-full min-h-screen bg-transparent text-slate-100 flex flex-col items-center justify-start p-1 selection:bg-sky-500/30 selection:text-sky-200">
+    <div className="min-h-screen w-full bg-transparent text-slate-100 flex flex-col items-center justify-start p-4 sm:p-8 selection:bg-sky-500/30 selection:text-sky-200">
       {/* If dismissed in web simulation mode, show a discreet floating summon button */}
       {isSimulatedClosed && !isTauri && (
-        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-slate-900/95 border border-slate-700/80 rounded-full px-5 py-2.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95">
+        <div className="fixed top-8 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-slate-900/90 border border-slate-700/80 rounded-full px-5 py-2.5 shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95">
           <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-pulse" />
-          <span className="text-xs text-slate-300 font-medium">Arc Desktop is running</span>
+          <span className="text-xs text-slate-300 font-medium">Arc Desktop is running in background</span>
           <button
             onClick={handleOpen}
             className="px-2.5 py-1 rounded-full bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs transition flex items-center gap-1.5"
@@ -311,31 +311,38 @@ export default function LauncherPage() {
           isSimulatedClosed ? 'opacity-0 scale-95 pointer-events-none' : 'opacity-100 scale-100'
         }`}
       >
-        {/* Command Card Container with native drag region */}
-        <div className="bg-slate-900/95 border border-slate-700/80 rounded-2xl shadow-2xl shadow-black/90 backdrop-blur-3xl overflow-hidden flex flex-col transition-all ring-1 ring-white/10">
-          {/* Top Integrated Drag & Title Bar */}
-          <div
-            data-tauri-drag-region
-            className="px-4 py-2 border-b border-slate-800/60 bg-slate-950/70 flex items-center justify-between select-none cursor-move"
-          >
-            <div className="flex items-center gap-2 pointer-events-none">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-[11px] font-semibold tracking-wider text-slate-400 uppercase">Arc Command Bar</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-800/80 border border-slate-700/60 text-slate-400">
-                Alt + Space
-              </span>
-              <button
-                onClick={handleDismiss}
-                className="p-1 rounded-md text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition"
-                title="Hide (Esc)"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
+        {/* Top Header / Mode Badge */}
+        <div className="flex items-center justify-between px-2 pb-2 text-xs text-slate-400">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="font-medium text-slate-300">
+              {isTauri ? 'Arc Desktop Native (Tauri)' : 'Arc Desktop Window'}
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/60 font-mono text-slate-300">
+              Alt + Space
+            </span>
           </div>
 
+          <div className="flex items-center gap-3">
+            <Link
+              href="/"
+              className="hover:text-white transition flex items-center gap-1 text-[11px]"
+            >
+              <span>App Portal</span>
+              <ArrowRight className="w-3 h-3" />
+            </Link>
+            <button
+              onClick={handleDismiss}
+              className="p-1 rounded-md hover:bg-slate-800 text-slate-400 hover:text-white transition"
+              title="Hide Window (Esc)"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Command Card Container */}
+        <div className="bg-slate-900/90 border border-slate-700/70 rounded-2xl shadow-2xl shadow-black/80 backdrop-blur-2xl overflow-hidden flex flex-col transition-all">
           {/* Input Bar */}
           <div className="p-4 flex items-center gap-3.5 border-b border-slate-800/80 bg-slate-950/40">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-400 to-indigo-600 p-0.5 shadow-md shadow-sky-500/10 shrink-0">
