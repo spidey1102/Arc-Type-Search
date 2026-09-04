@@ -313,28 +313,28 @@ export default function LauncherPage() {
     // 5. AI Query & Web Search when user types
     if (q) {
       list.push({
-        id: 'ai-prompt',
-        type: 'ai',
-        title: `Ask AI: "${query}"`,
-        subtitle: 'Get instantaneous inline AI summary and synthesized answer',
-        icon: Sparkles,
-        category: 'Intelligence',
-        badge: 'Gemini',
-        action: () => {
-          askAi(query);
-        }
-      });
-
-      list.push({
         id: 'web-google',
         type: 'search',
         title: `Search Google for "${query}"`,
-        subtitle: 'Open web search in default browser',
+        subtitle: 'Open web search in default browser (Enter)',
         icon: Globe,
         category: 'Web Search',
         badge: 'Search',
         action: () => {
           openDesktopUrl(`https://www.google.com/search?q=${encodeURIComponent(query)}`);
+        }
+      });
+
+      list.push({
+        id: 'ai-prompt',
+        type: 'ai',
+        title: `Ask AI: "${query}"`,
+        subtitle: 'Get instantaneous inline AI summary (Shift + Enter)',
+        icon: Sparkles,
+        category: 'Intelligence',
+        badge: 'Gemini',
+        action: () => {
+          askAi(query);
         }
       });
     }
@@ -357,7 +357,9 @@ export default function LauncherPage() {
       setSelectedIndex(prev => (prev - 1 + items.length) % Math.max(1, items.length));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (items[activeIndex]) {
+      if (e.shiftKey && query.trim()) {
+        askAi(query);
+      } else if (items[activeIndex]) {
         handleItemSelect(items[activeIndex]);
       }
     }
@@ -637,24 +639,30 @@ export default function LauncherPage() {
 
               {/* Footer Bar */}
               <div className="px-4 py-2.5 bg-slate-950/60 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3 sm:gap-4 flex-wrap">
                   <span className="flex items-center gap-1.5">
                     <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
                       ↑↓
                     </kbd>
-                    <span>Navigate</span>
+                    <span className="hidden sm:inline">Navigate</span>
                   </span>
                   <span className="flex items-center gap-1.5">
                     <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
                       Enter
                     </kbd>
-                    <span>Select</span>
+                    <span>Open/Search</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
+                      ⇧+Enter
+                    </kbd>
+                    <span>Ask AI</span>
                   </span>
                   <span className="flex items-center gap-1.5">
                     <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
                       Esc
                     </kbd>
-                    <span>Dismiss</span>
+                    <span className="hidden sm:inline">Dismiss</span>
                   </span>
                 </div>
 
