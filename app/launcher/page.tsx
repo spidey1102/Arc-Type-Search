@@ -154,7 +154,12 @@ export default function LauncherPage() {
     setAiGenerating(true);
     setAiResponse(null);
     try {
-      const res = await fetch('/api/gemini/generate', {
+      // In Tauri static build, we must point to the remote cloud backend for API routes
+      const apiUrl = isTauri 
+        ? 'https://ais-pre-2x62xwyv5k44ctho6fh4yo-329522455645.asia-southeast1.run.app/api/gemini/generate' 
+        : '/api/gemini/generate';
+        
+      const res = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

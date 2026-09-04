@@ -7,15 +7,15 @@
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:3000/launcher",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../.next"
+    "frontendDist": "../out"
   },
   "app": {
     "windows": [
       {
         "title": "Arc",
         "label": "main",
-        "width": 680,
-        "height": 480,
+        "width": 720,
+        "height": 540,
         "resizable": false,
         "decorations": false,
         "transparent": true,
