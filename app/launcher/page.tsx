@@ -32,7 +32,9 @@ import {
   Eye,
   EyeOff,
   RefreshCw,
-  Sliders
+  Sliders,
+  Key,
+  Bot
 } from 'lucide-react';
 import {
   useIsTauri,
@@ -44,6 +46,13 @@ import {
   DesktopAppDefinition
 } from '@/lib/desktop-ipc';
 import { evaluateSmartQuery, EvaluationResult } from '@/lib/smart-evaluator';
+import {
+  queryGeminiAi,
+  getStoredApiKey,
+  saveStoredApiKey,
+  getStoredModel,
+  saveStoredModel
+} from '@/lib/ai-service';
 
 interface LauncherItem {
   id: string;
@@ -81,7 +90,14 @@ export default function LauncherPage() {
 
   // Settings & Tabs
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'apps' | 'favorites'>('apps');
+  const [settingsTab, setSettingsTab] = useState<'apps' | 'favorites' | 'ai'>('apps');
+
+  // AI Configuration State in Settings
+  const [apiKeyInput, setApiKeyInput] = useState(() => getStoredApiKey());
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(() => getStoredModel());
+  const [isTestingAiKey, setIsTestingAiKey] = useState(false);
+  const [aiKeyTestResult, setAiKeyTestResult] = useState<string | null>(null);
 
   // Favorites
   const [favorites, setFavorites] = useState<Favorite[]>(() => {
@@ -230,13 +246,41 @@ export default function LauncherPage() {
     showToast('Favorite added!');
   };
 
-  const handleDeleteFavorite = (id: string) => {
-    saveFavorites(favorites.filter(f => f.id !== id));
+  const handleDeleteFavorite = (favId: string) => {
+    const updated = favorites.filter(f => f.id !== favId);
+    saveFavorites(updated);
+    showToast('Favorite removed');
+  };
+
+  const handleSaveApiKey = () => {
+    saveStoredApiKey(apiKeyInput);
+    saveStoredModel(selectedModel);
+    showToast('AI API Settings saved!');
+  };
+
+  const handleTestAiKey = async () => {
+    if (!apiKeyInput.trim()) {
+      setAiKeyTestResult('⚠️ Please enter an API key first.');
+      return;
+    }
+    setIsTestingAiKey(true);
+    setAiKeyTestResult(null);
+    saveStoredApiKey(apiKeyInput);
+    saveStoredModel(selectedModel);
+    try {
+      const res = await queryGeminiAi('Say "Connection Successful! Gemini API is active." in one sentence.');
+      setAiKeyTestResult(`✅ ${res}`);
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      setAiKeyTestResult(`❌ Connection failed: ${errorMsg}`);
+    } finally {
+      setIsTestingAiKey(false);
+    }
   };
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 2400);
+    setTimeout(() => setToastMessage(null), 2500);
   }, []);
 
   const handleDismiss = useCallback(async () => {
@@ -244,29 +288,25 @@ export default function LauncherPage() {
       await hideDesktopWindow();
     } else {
       setIsSimulatedClosed(true);
-      showToast('Dismissed. Press Alt+Space to summon again.');
     }
-  }, [isTauri, showToast]);
+  }, [isTauri]);
 
-  const handleOpen = () => {
+  const handleOpen = useCallback(() => {
     setIsSimulatedClosed(false);
     setTimeout(() => inputRef.current?.focus(), 50);
-  };
+  }, []);
 
-  // Keyboard shortcut listener
+  // Global key listener for hotkey and Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Global hotkey simulation for web mode: Alt+Space or Cmd+Space
-      if ((e.altKey && e.code === 'Space') || (e.metaKey && e.code === 'Space')) {
+      if (e.altKey && (e.code === 'Space' || e.key === ' ')) {
         e.preventDefault();
-        setIsSimulatedClosed(prev => !prev);
         if (isSimulatedClosed) {
-          setTimeout(() => inputRef.current?.focus(), 50);
+          handleOpen();
+        } else {
+          handleDismiss();
         }
-        return;
       }
-
-      if (isSimulatedClosed) return;
 
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -281,7 +321,7 @@ export default function LauncherPage() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isSimulatedClosed, isTauri, handleDismiss, showSettings]);
+  }, [isSimulatedClosed, isTauri, handleDismiss, handleOpen, showSettings]);
 
   // Instant smart calculation & equation evaluator
   const smartEval = useMemo<EvaluationResult | null>(() => {
@@ -307,72 +347,28 @@ export default function LauncherPage() {
     }
   }, [handleDismiss, showToast]);
 
-  // Handle AI question with multi-tier intelligence
+  // Handle AI question with Gemini API & local engine
   const askAi = useCallback(async (prompt: string) => {
+    const cleanPrompt = prompt.trim();
+    if (!cleanPrompt) return;
     setAiGenerating(true);
     setAiResponse(null);
-    const cleanPrompt = prompt.trim();
-    const lower = cleanPrompt.toLowerCase();
-
-    // Instant local intelligence for common queries
-    if (/^(hi|hello|hey|greetings|hola)\b/i.test(lower)) {
-      setTimeout(() => {
-        setAiResponse("Hello! I am Arc Desktop Intelligence. Type any app name, calculation, math problem, or search query to launch instantly.");
-        setAiGenerating(false);
-      }, 150);
-      return;
-    }
-
-    if (/^(who are you|what is this|about)\b/i.test(lower)) {
-      setTimeout(() => {
-        setAiResponse("I am Arc Desktop Command Palette — an ultra-fast, native system launcher with global hotkey (Alt+Space), app execution, instant math solver, and AI assistance.");
-        setAiGenerating(false);
-      }, 150);
-      return;
-    }
-
-    if (/^(help|commands|shortcuts)\b/i.test(lower)) {
-      setTimeout(() => {
-        setAiResponse("• Alt+Space to summon/hide anywhere\n• Type math (e.g. 15% of 850 or 140 * 12) for instant calculation\n• Shift+Enter to query AI\n• Manage Apps/Favorites in Settings");
-        setAiGenerating(false);
-      }, 150);
-      return;
-    }
 
     try {
-      const apiUrl = isTauri 
-        ? 'https://ais-pre-2x62xwyv5k44ctho6fh4yo-329522455645.asia-southeast1.run.app/api/gemini/generate' 
-        : '/api/gemini/generate';
-        
-      const res = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: `You are Arc Desktop AI Assistant. Answer concisely in 2 sentences or bullet points: ${cleanPrompt}`
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAiResponse(data.text || `Summary for: "${cleanPrompt}"`);
-      } else {
-        if (smartEval) {
-          setAiResponse(`${smartEval.result}. ${smartEval.explanation || ''}`);
-        } else {
-          setAiResponse(`Query: "${cleanPrompt}". Press Enter to open results in your default browser.`);
-        }
-      }
+      const response = await queryGeminiAi(cleanPrompt);
+      setAiResponse(response);
     } catch {
       if (smartEval) {
         setAiResponse(`${smartEval.result}. ${smartEval.explanation || ''}`);
       } else {
-        setAiResponse(`Search Web: "${cleanPrompt}" (Press Enter to open in browser)`);
+        setAiResponse(`Query: "${cleanPrompt}". Press Enter to open results in browser.`);
       }
     } finally {
       setAiGenerating(false);
     }
-  }, [smartEval, isTauri]);
+  }, [smartEval]);
 
-  // Build items list based on query
+  // Build Results List
   const items = useMemo<LauncherItem[]>(() => {
     const list: LauncherItem[] = [];
     const q = query.trim().toLowerCase();
@@ -381,7 +377,7 @@ export default function LauncherPage() {
     favorites.forEach(fav => {
       if (!q || fav.title.toLowerCase().includes(q) || fav.value.toLowerCase().includes(q)) {
         list.push({
-          id: `fav-${fav.id}`,
+          id: fav.id,
           type: fav.type,
           title: fav.title,
           subtitle: fav.type === 'url' ? `Open: ${fav.value}` : `Copy to clipboard: ${fav.value}`,
@@ -407,13 +403,13 @@ export default function LauncherPage() {
         id: 'smart-eval-result',
         type: 'calc',
         title: smartEval.result,
-        subtitle: smartEval.explanation || `Result for "${query}" (Press Enter to copy)`,
+        subtitle: smartEval.explanation || `Instant calculation for "${query}"`,
         icon: Calculator,
-        category: 'Calculation',
-        badge: smartEval.badge,
+        category: 'Instant Calculation',
+        badge: 'Enter to Copy',
         action: () => {
           navigator.clipboard.writeText(smartEval.result);
-          showToast(`Copied ${smartEval.result} to clipboard!`);
+          showToast(`Copied "${smartEval.result}" to clipboard!`);
           handleDismiss();
         }
       });
@@ -506,19 +502,6 @@ export default function LauncherPage() {
     // 5. AI Query & Web Search when user types
     if (q) {
       list.push({
-        id: 'web-google',
-        type: 'search',
-        title: `Search Google for "${query}"`,
-        subtitle: 'Open web search in default browser (Enter)',
-        icon: Globe,
-        category: 'Web Search',
-        badge: 'Search',
-        action: () => {
-          openDesktopUrl(`https://www.google.com/search?q=${encodeURIComponent(query)}`);
-        }
-      });
-
-      list.push({
         id: 'ai-prompt',
         type: 'ai',
         title: `Ask AI: "${query}"`,
@@ -528,6 +511,19 @@ export default function LauncherPage() {
         badge: 'Gemini',
         action: () => {
           askAi(query);
+        }
+      });
+
+      list.push({
+        id: 'web-google',
+        type: 'search',
+        title: `Search Google for "${query}"`,
+        subtitle: 'Open web search in default browser (Enter)',
+        icon: Globe,
+        category: 'Web Search',
+        badge: 'Search',
+        action: () => {
+          openDesktopUrl(`https://www.google.com/search?q=${encodeURIComponent(query)}`);
         }
       });
     }
@@ -640,17 +636,24 @@ export default function LauncherPage() {
                   <div className="flex gap-1 bg-slate-900 p-0.5 rounded-lg border border-slate-800">
                     <button
                       onClick={() => setSettingsTab('apps')}
-                      className={`px-3 py-1 rounded-md text-xs font-medium transition flex items-center gap-1.5 ${settingsTab === 'apps' ? 'bg-sky-500 text-slate-950 font-semibold shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition flex items-center gap-1.5 ${settingsTab === 'apps' ? 'bg-sky-500 text-slate-950 font-semibold shadow-sm' : 'text-slate-400 hover:text-white'}`}
                     >
                       <Laptop className="w-3.5 h-3.5" />
-                      <span>Manage Apps ({installedApps.length})</span>
+                      <span>Apps ({installedApps.length})</span>
                     </button>
                     <button
                       onClick={() => setSettingsTab('favorites')}
-                      className={`px-3 py-1 rounded-md text-xs font-medium transition flex items-center gap-1.5 ${settingsTab === 'favorites' ? 'bg-sky-500 text-slate-950 font-semibold shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition flex items-center gap-1.5 ${settingsTab === 'favorites' ? 'bg-sky-500 text-slate-950 font-semibold shadow-sm' : 'text-slate-400 hover:text-white'}`}
                     >
                       <Globe className="w-3.5 h-3.5" />
-                      <span>Bookmarks & Links ({favorites.length})</span>
+                      <span>Links ({favorites.length})</span>
+                    </button>
+                    <button
+                      onClick={() => setSettingsTab('ai')}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition flex items-center gap-1.5 ${settingsTab === 'ai' ? 'bg-sky-500 text-slate-950 font-semibold shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>AI & Gemini</span>
                     </button>
                   </div>
                 </div>
@@ -663,7 +666,7 @@ export default function LauncherPage() {
                     title="Scan PC for installed apps"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isScanningApps ? 'animate-spin text-sky-400' : ''}`} />
-                    <span className="hidden sm:inline">Scan Apps</span>
+                    <span className="hidden sm:inline">Scan</span>
                   </button>
                 )}
               </div>
@@ -777,7 +780,7 @@ export default function LauncherPage() {
                     )}
                   </div>
                 </div>
-              ) : (
+              ) : settingsTab === 'favorites' ? (
                 /* Tab 2: Favorites / Links */
                 <div className="p-4 overflow-y-auto flex-1 space-y-5">
                   {/* Add Bookmark Form */}
@@ -873,6 +876,90 @@ export default function LauncherPage() {
                     ))}
                   </div>
                 </div>
+              ) : (
+                /* Tab 3: AI & Gemini Configuration */
+                <div className="p-4 overflow-y-auto flex-1 space-y-5">
+                  <div className="p-4 bg-slate-800/30 rounded-xl border border-slate-700/50 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-sky-400" />
+                        <h3 className="text-xs font-semibold text-white">Google Gemini AI Setup</h3>
+                      </div>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-medium">
+                        {apiKeyInput ? 'Custom Key Active' : 'Instant AI Engine'}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-slate-300 font-medium flex items-center justify-between">
+                        <span>Gemini API Key</span>
+                        <a
+                          href="https://aistudio.google.com/app/apikey"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-sky-400 hover:underline flex items-center gap-1 text-[11px]"
+                        >
+                          <span>Get Free Key</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showApiKey ? 'text' : 'password'}
+                          value={apiKeyInput}
+                          onChange={e => setApiKeyInput(e.target.value)}
+                          placeholder="AIzaSy..."
+                          className="w-full bg-slate-950/60 border border-slate-700 rounded-lg pl-3 pr-10 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-sky-500 font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          className="absolute right-2.5 top-2.5 text-slate-400 hover:text-white"
+                        >
+                          {showApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        Stored locally in your desktop client. Never shared or sent to third parties.
+                      </p>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-slate-300 font-medium">Model Selection</label>
+                      <select
+                        value={selectedModel}
+                        onChange={e => setSelectedModel(e.target.value)}
+                        className="w-full bg-slate-950/60 border border-slate-700 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-sky-500"
+                      >
+                        <option value="gemini-2.5-flash">Gemini 2.5 Flash (Ultra-Fast & Recommended)</option>
+                        <option value="gemini-2.5-pro">Gemini 2.5 Pro (Deep Reasoning)</option>
+                      </select>
+                    </div>
+
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        onClick={handleSaveApiKey}
+                        className="flex-1 bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold py-2 rounded-lg text-xs transition"
+                      >
+                        Save AI Preferences
+                      </button>
+                      <button
+                        onClick={handleTestAiKey}
+                        disabled={isTestingAiKey}
+                        className="px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-2 rounded-lg text-xs transition border border-slate-700 disabled:opacity-50 flex items-center gap-1.5"
+                      >
+                        {isTestingAiKey ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-sky-400" /> : <Play className="w-3.5 h-3.5" />}
+                        <span>Test Key</span>
+                      </button>
+                    </div>
+
+                    {aiKeyTestResult && (
+                      <div className="p-2.5 bg-slate-950/80 rounded-lg border border-slate-800 text-xs text-slate-200">
+                        {aiKeyTestResult}
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           ) : (
@@ -913,7 +1000,7 @@ export default function LauncherPage() {
               {(aiGenerating || aiResponse) && (
                 <div className="p-3.5 bg-sky-950/30 border-b border-sky-800/40 flex items-start gap-3 animate-in fade-in slide-in-from-top-1">
                   <Sparkles className="w-4 h-4 text-sky-400 shrink-0 mt-0.5 animate-pulse" />
-                  <div className="flex-1 text-xs sm:text-sm text-slate-200 leading-relaxed">
+                  <div className="flex-1 text-xs sm:text-sm text-slate-200 leading-relaxed min-w-0">
                     {aiGenerating ? (
                       <div className="flex items-center gap-2 text-sky-300">
                         <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
@@ -921,21 +1008,40 @@ export default function LauncherPage() {
                       </div>
                     ) : (
                       <div>
-                        <div className="font-semibold text-sky-400 text-[11px] uppercase tracking-wider mb-1 flex items-center gap-1.5">
-                          <span>Arc Intelligence</span>
+                        <div className="font-semibold text-sky-400 text-[11px] uppercase tracking-wider mb-1 flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <Bot className="w-3.5 h-3.5" />
+                            <span>Arc Intelligence</span>
+                          </span>
                         </div>
-                        <p className="whitespace-pre-line text-slate-100">{aiResponse}</p>
-                        {query && (
-                          <div className="mt-2 flex items-center gap-2">
-                            <button
-                              onClick={() => openDesktopUrl(`https://www.google.com/search?q=${encodeURIComponent(query)}`)}
-                              className="px-2.5 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 rounded-md text-xs font-medium transition flex items-center gap-1 border border-sky-500/30"
-                            >
-                              <Globe className="w-3 h-3" />
-                              <span>Search Web for &quot;{query}&quot;</span>
-                            </button>
-                          </div>
-                        )}
+                        <div className="whitespace-pre-line text-slate-100 font-normal">
+                          {aiResponse}
+                        </div>
+                        <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+                          <button
+                            onClick={() => {
+                              if (aiResponse) {
+                                navigator.clipboard.writeText(aiResponse);
+                                showToast('AI response copied!');
+                              }
+                            }}
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-xs font-medium transition flex items-center gap-1 border border-slate-700"
+                          >
+                            <Copy className="w-3 h-3" />
+                            <span>Copy Answer</span>
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              setShowSettings(true);
+                              setSettingsTab('ai');
+                            }}
+                            className="px-2.5 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 rounded-md text-xs font-medium transition flex items-center gap-1 border border-sky-500/30"
+                          >
+                            <Key className="w-3 h-3" />
+                            <span>AI Settings</span>
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1071,4 +1177,3 @@ export default function LauncherPage() {
     </div>
   );
 }
-
