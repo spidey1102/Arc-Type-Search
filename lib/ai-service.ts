@@ -1,9 +1,19 @@
-import { GoogleGenAI } from '@google/genai';
+import {
+  detectLocalAgentAction,
+  executeAgentAction,
+  AgentAction,
+  addSearchBang
+} from '@/lib/agentic-ai';
 
 export interface AiServiceConfig {
   apiKey: string;
   model: string;
   useLocalFallback: boolean;
+}
+
+export interface AiQueryResult {
+  text: string;
+  actionExecuted?: AgentAction;
 }
 
 const LOCAL_KEY_STORAGE = 'arc-gemini-key';
@@ -43,7 +53,6 @@ export function saveStoredModel(model: string): void {
 
 /**
  * Intelligent local fallback knowledge engine when offline or no API key is set.
- * Covers general queries, commands, definitions, coding, conversions, and facts.
  */
 export function getLocalAiAnswer(prompt: string): string | null {
   const p = prompt.trim().toLowerCase();
@@ -51,32 +60,34 @@ export function getLocalAiAnswer(prompt: string): string | null {
   // 1. Arc capabilities and identity
   if (/^(what can you do|capabilities|features|what do you do)\b/i.test(p)) {
     return `✨ **Arc Desktop Intelligence Capabilities:**
+• **Agentic Shortcuts & Bangs**: Tell me to *"create shortcut rd to search reddit"* or *"add bang amz for amazon"*, and I'll configure it on the fly!
+• **Search Prefixes (Bangs)**: Type \`yt <query>\`, \`gh <repo>\`, \`wiki <topic>\`, or your custom bangs for direct search.
 • **Instant App & Tool Launching**: Launch system applications (VS Code, Terminal, Chrome, Spotify, etc.) via keyboard.
 • **Calculations & Math**: Type equations (e.g. \`15% of 850\`, \`sqrt(144) * 12\`) for instant calculation.
 • **AI Assistance**: Get instant answers, code snippets, definitions, and summaries on any topic.
-• **System Controls**: Lock screen, mute audio, toggle dark mode, open Explorer/Downloads.
 • **Bookmarks & Clipboard**: Save URLs and frequently copied text snippets with one-click access.
 • **Global Hotkey**: Press **Alt + Space** anywhere on your desktop to toggle Arc.`;
   }
 
   if (/^(who are you|what is this|about arc|who made you)\b/i.test(p)) {
     return `⚡ **Arc Desktop Command Palette**
-I am your high-performance desktop companion built with Rust & Tauri. Designed for lightning-fast productivity, instant calculations, application launching, and AI intelligence.`;
+I am your high-performance desktop companion built with Rust & Tauri. Designed for lightning-fast productivity, instant calculations, application launching, and agentic AI intelligence.`;
   }
 
   if (/^(help|commands|shortcuts|how to use)\b/i.test(p)) {
     return `⌨️ **Arc Desktop Quick Guide:**
 • **Alt + Space**: Summon or dismiss command bar anywhere.
-• **Enter**: Open selected app, link, or calculation.
+• **Search Bangs**: Type \`yt <query>\` (YouTube), \`gh <query>\` (GitHub), \`rd <query>\` (Reddit), etc.
+• **Agentic AI**: Tell me *"create shortcut eb for ebay"* or *"bookmark https://... as My Link"*.
 • **Shift + Enter**: Send active prompt to AI Assistant.
 • **Type Math**: e.g., \`25 * 40\`, \`120 usd to eur\`, \`30% of 1500\`.
-• **Settings (⚙)**: Manage system apps visibility, configure Gemini API key, and manage bookmarks.`;
+• **Settings (⚙)**: Manage system apps visibility, configure search bangs, and manage API keys.`;
   }
 
   // 2. Greetings
   if (/^(hi|hello|hey|greetings|hola|good morning|good evening|good afternoon)\b/i.test(p)) {
     return `👋 **Hello!** How can I help you right now?
-Try typing an application name (e.g. *Code*, *Terminal*), a math problem (e.g. *45 * 18*), or any question to get an instant answer.`;
+Try typing an application name (e.g. *Code*, *Terminal*), a search bang (e.g. *yt lo-fi*), or ask me to create a new shortcut on the fly!`;
   }
 
   // 3. Coding snippets & questions
@@ -85,7 +96,7 @@ Try typing an application name (e.g. *Code*, *Terminal*), a math problem (e.g. *
 • **Python:** \`text[::-1]\`
 • **JavaScript / TypeScript:** \`str.split('').reverse().join('')\`
 • **Rust:** \`s.chars().rev().collect::<String>()\`
-• **Java:** \`new StringBuilder(str).reverse().toString()\` `;
+• **Java:** \`new StringBuilder(str).reverse().toString()\``;
   }
 
   if (p.includes('difference between let and const') || p.includes('let vs const')) {
@@ -138,28 +149,104 @@ A modern systems programming language focused on safety, speed, and concurrency.
 }
 
 /**
- * Generate AI Response using either:
- * 1. User/Env Google Gemini API Key with @google/genai
- * 2. Or Direct REST endpoint
- * 3. Or Smart Local Engine
+ * Gemini Tools / Function Declarations for Agentic Action Execution
+ */
+const GEMINI_AGENTIC_TOOLS = [
+  {
+    functionDeclarations: [
+      {
+        name: 'create_search_bang',
+        description: 'Creates a new instant search bang/prefix shortcut in Arc Desktop so the user can search any website directly (e.g. prefix "eb" for eBay, "amz" for Amazon, "rd" for Reddit).',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            prefix: { type: 'STRING', description: 'The short lowercase prefix trigger, e.g. "eb", "ddg", "yt"' },
+            name: { type: 'STRING', description: 'The human-friendly name of the website or search engine, e.g. "eBay", "Reddit"' },
+            url_template: { type: 'STRING', description: 'The search URL template containing "{q}" where user query will be inserted, e.g. "https://www.ebay.com/sch/i.html?_nkw={q}"' },
+            example_query: { type: 'STRING', description: 'A realistic example query, e.g. "headphones"' }
+          },
+          required: ['prefix', 'name', 'url_template']
+        }
+      },
+      {
+        name: 'create_bookmark',
+        description: 'Saves a web URL link or clipboard text snippet to the user\'s favorites in Arc Desktop.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            title: { type: 'STRING', description: 'Short descriptive title for the bookmark or snippet' },
+            value: { type: 'STRING', description: 'The web URL (https://...) or text string to copy' },
+            type: { type: 'STRING', enum: ['url', 'copy'], description: 'Whether it is a web URL or a clipboard copy snippet' }
+          },
+          required: ['title', 'value']
+        }
+      },
+      {
+        name: 'create_app_shortcut',
+        description: 'Adds a custom desktop application shortcut or executable command.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            name: { type: 'STRING', description: 'Application name, e.g. "Blender", "IntelliJ"' },
+            command: { type: 'STRING', description: 'Executable command or path, e.g. "blender", "idea"' },
+            category: { type: 'STRING', description: 'Category e.g. "developer", "graphics", "system"' }
+          },
+          required: ['name', 'command']
+        }
+      }
+    ]
+  }
+];
+
+/**
+ * Generate AI Response with Agentic Tool-Execution.
  */
 export async function queryGeminiAi(prompt: string): Promise<string> {
+  const result = await queryAgenticAi(prompt);
+  return result.text;
+}
+
+export async function queryAgenticAi(prompt: string): Promise<AiQueryResult> {
   const cleanPrompt = prompt.trim();
-  if (!cleanPrompt) return 'Please enter a prompt or question.';
+  if (!cleanPrompt) return { text: 'Please enter a prompt or instruction.' };
+
+  // 1. FIRST check our local intelligent NLP agent parser for instantaneous offline action execution
+  const localAction = detectLocalAgentAction(cleanPrompt);
+  if (localAction) {
+    const executed = executeAgentAction(localAction);
+    if (executed) {
+      let detailMsg = '';
+      if (localAction.type === 'create_bang') {
+        const { prefix, name, exampleQuery } = localAction.payload;
+        detailMsg = `⚡ **Agent Action Executed:**\n• Created search shortcut **\`${prefix}\`** for **${name}**.\n• You can now type **\`${prefix} <anything>\`** in the command bar to search ${name} directly!\n• *Example:* Try typing \`${prefix} ${exampleQuery || 'news'}\` in Arc.`;
+      } else if (localAction.type === 'create_bookmark') {
+        detailMsg = `⚡ **Agent Action Executed:**\n• ${localAction.summary}\n• Saved to your Bookmarks list and immediately accessible.`;
+      } else if (localAction.type === 'create_app') {
+        detailMsg = `⚡ **Agent Action Executed:**\n• ${localAction.summary}\n• App shortcut registered in your Arc launcher.`;
+      } else if (localAction.type === 'system_command') {
+        detailMsg = `⚡ **Agent Action Executed:**\n• ${localAction.summary}`;
+      }
+      return { text: detailMsg, actionExecuted: localAction };
+    }
+  }
 
   const apiKey = getStoredApiKey();
   const modelName = getStoredModel() || 'gemini-2.5-flash';
 
-  // 1. If API Key is present, call Google Gemini
+  // 2. If API Key is present, call Google Gemini with tool declarations
   if (apiKey) {
     try {
-      // Direct REST fallback if SDK has web worker or browser bundle issues
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: `You are Arc Desktop AI, an ultra-fast desktop productivity assistant. Answer clearly, concisely, and formatting with clean Markdown bullet points when appropriate: ${cleanPrompt}` }] }],
+          contents: [{
+            parts: [{
+              text: `You are Arc Desktop AI, an ultra-fast desktop assistant. You have access to tools to create search bangs (shortcuts like 'yt' for YouTube or 'eb' for eBay), bookmarks, and app shortcuts on command. If the user asks you to create or add a shortcut, bang, link, or app, call the appropriate tool. Otherwise, answer clearly, concisely, and formatting with clean Markdown bullet points:\n${cleanPrompt}`
+            }]
+          }],
+          tools: GEMINI_AGENTIC_TOOLS,
           generationConfig: {
             temperature: 0.7,
             maxOutputTokens: 800,
@@ -169,16 +256,67 @@ export async function queryGeminiAi(prompt: string): Promise<string> {
 
       if (res.ok) {
         const data = await res.json();
-        const candidate = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (candidate) {
-          return candidate.trim();
+        const candidate = data.candidates?.[0];
+        const content = candidate?.content;
+
+        // Check if Gemini invoked a function call
+        const functionCallPart = content?.parts?.find((p: any) => p.functionCall);
+        if (functionCallPart && functionCallPart.functionCall) {
+          const { name, args } = functionCallPart.functionCall;
+
+          if (name === 'create_search_bang') {
+            const newBang = addSearchBang(args.prefix, args.name, args.url_template, args.example_query);
+            const action: AgentAction = {
+              type: 'create_bang',
+              summary: `Created search bang \`${newBang.prefix}\` for ${newBang.name}!`,
+              payload: newBang
+            };
+            return {
+              text: `⚡ **Agent Action Executed:**\n• Created search shortcut **\`${newBang.prefix}\`** for **${newBang.name}**.\n• You can now type **\`${newBang.prefix} <anything>\`** in Arc to search ${newBang.name} directly!\n• *Example:* \`${newBang.prefix} ${args.example_query || 'demo'}\``,
+              actionExecuted: action
+            };
+          }
+
+          if (name === 'create_bookmark') {
+            const action: AgentAction = {
+              type: 'create_bookmark',
+              summary: `Saved bookmark "${args.title}"!`,
+              payload: { title: args.title, value: args.value, type: args.type || 'url' }
+            };
+            executeAgentAction(action);
+            return {
+              text: `⚡ **Agent Action Executed:**\n• Saved **${args.title}** (${args.value}) to your bookmarks.`,
+              actionExecuted: action
+            };
+          }
+
+          if (name === 'create_app_shortcut') {
+            const action: AgentAction = {
+              type: 'create_app',
+              summary: `Registered app shortcut "${args.name}"!`,
+              payload: { name: args.name, command: args.command, category: args.category || 'Custom' }
+            };
+            executeAgentAction(action);
+            return {
+              text: `⚡ **Agent Action Executed:**\n• Added desktop app shortcut for **${args.name}** (command: \`${args.command}\`).`,
+              actionExecuted: action
+            };
+          }
+        }
+
+        // Regular text response
+        const textPart = content?.parts?.find((p: any) => p.text);
+        if (textPart && textPart.text) {
+          return { text: textPart.text.trim() };
         }
       } else {
         const errJson = await res.json().catch(() => ({}));
         console.warn('Gemini API error response:', errJson);
         const errMsg = errJson.error?.message || res.statusText;
         if (res.status === 400 || res.status === 403) {
-          return `⚠️ **Gemini API Error:** ${errMsg}\n\nPlease check your API key in **Settings (⚙) → AI & Gemini API**.`;
+          return {
+            text: `⚠️ **Gemini API Error:** ${errMsg}\n\nPlease check your API key in **Settings (⚙) → AI & Gemini API**.`
+          };
         }
       }
     } catch (apiErr) {
@@ -186,16 +324,22 @@ export async function queryGeminiAi(prompt: string): Promise<string> {
     }
   }
 
-  // 2. Check Local Knowledge Engine
+  // 3. Local Knowledge Engine fallback
   const localAnswer = getLocalAiAnswer(cleanPrompt);
   if (localAnswer) {
-    return localAnswer;
+    return { text: localAnswer };
   }
 
-  // 3. Fallback informative summary with tip to add API key
-  return `💡 **Arc Intelligence Summary:**
+  // 4. Default helpful fallback
+  return {
+    text: `💡 **Arc Intelligence Summary:**
 • **Query:** "${cleanPrompt}"
-• **Topic Analysis:** Arc Desktop processed this request.
+• **Agentic Actions:** You can ask me:
+  - *"Create a shortcut 'eb' to search eBay"*
+  - *"Add a bang 'ddg' for DuckDuckGo"*
+  - *"Bookmark https://news.ycombinator.com as Hacker News"*
+  - *"Add app Blender with command blender"*
 
-*Tip: To unlock live multi-modal generative answers, add your free Google Gemini API key in **Settings (⚙) → AI & Gemini API**.*`;
+*Tip: Connect your free Gemini API key in Settings (⚙) to enable live multi-turn reasoning.*`
+  };
 }

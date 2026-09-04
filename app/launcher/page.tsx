@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import Link from 'next/link';
 import {
   Search,
   Globe,
@@ -12,14 +11,11 @@ import {
   Settings,
   Sparkles,
   ExternalLink,
-  ArrowRight,
   ArrowLeft,
-  Command,
   X,
   Laptop,
   Check,
   Zap,
-  Layers,
   FolderOpen,
   Lock,
   VolumeX,
@@ -34,7 +30,8 @@ import {
   RefreshCw,
   Sliders,
   Key,
-  Bot
+  Bot,
+  Compass
 } from 'lucide-react';
 import {
   useIsTauri,
@@ -48,11 +45,21 @@ import {
 import { evaluateSmartQuery, EvaluationResult } from '@/lib/smart-evaluator';
 import {
   queryGeminiAi,
+  queryAgenticAi,
   getStoredApiKey,
   saveStoredApiKey,
   getStoredModel,
   saveStoredModel
 } from '@/lib/ai-service';
+import {
+  SearchBang,
+  getStoredBangs,
+  saveStoredBangs,
+  addSearchBang,
+  deleteSearchBang,
+  DEFAULT_SEARCH_BANGS,
+  detectLocalAgentAction
+} from '@/lib/agentic-ai';
 
 interface LauncherItem {
   id: string;
@@ -90,7 +97,14 @@ export default function LauncherPage() {
 
   // Settings & Tabs
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'apps' | 'favorites' | 'ai'>('apps');
+  const [settingsTab, setSettingsTab] = useState<'apps' | 'bangs' | 'favorites' | 'ai'>('apps');
+
+  // Search Bangs State
+  const [searchBangs, setSearchBangs] = useState<SearchBang[]>(() => getStoredBangs());
+  const [newBangPrefix, setNewBangPrefix] = useState('');
+  const [newBangName, setNewBangName] = useState('');
+  const [newBangUrl, setNewBangUrl] = useState('');
+  const [newBangExample, setNewBangExample] = useState('');
 
   // AI Configuration State in Settings
   const [apiKeyInput, setApiKeyInput] = useState(() => getStoredApiKey());
@@ -152,6 +166,24 @@ export default function LauncherPage() {
 
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  }, []);
+
+  const handleDismiss = useCallback(async () => {
+    if (isTauri) {
+      await hideDesktopWindow();
+    } else {
+      setIsSimulatedClosed(true);
+    }
+  }, [isTauri]);
+
+  const handleOpen = useCallback(() => {
+    setIsSimulatedClosed(false);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }, []);
 
   // Scan installed apps on launch
   useEffect(() => {
@@ -230,6 +262,31 @@ export default function LauncherPage() {
     showToast('App shortcut removed.');
   };
 
+  // Search Bangs Management
+  const handleAddBang = () => {
+    if (!newBangPrefix.trim() || !newBangUrl.trim()) return;
+    const bang = addSearchBang(newBangPrefix, newBangName || newBangPrefix, newBangUrl, newBangExample);
+    setSearchBangs(getStoredBangs());
+    setNewBangPrefix('');
+    setNewBangName('');
+    setNewBangUrl('');
+    setNewBangExample('');
+    showToast(`Created search shortcut "!${bang.prefix}" for ${bang.name}!`);
+  };
+
+  const handleDeleteBang = (prefix: string) => {
+    deleteSearchBang(prefix);
+    setSearchBangs(getStoredBangs());
+    showToast(`Deleted bang "!${prefix}".`);
+  };
+
+  const handleResetBangs = () => {
+    saveStoredBangs(DEFAULT_SEARCH_BANGS);
+    setSearchBangs(DEFAULT_SEARCH_BANGS);
+    showToast('Reset search bangs to defaults.');
+  };
+
+  // Favorites Management
   const saveFavorites = (newFavs: Favorite[]) => {
     setFavorites(newFavs);
     if (typeof window !== 'undefined') {
@@ -277,24 +334,6 @@ export default function LauncherPage() {
       setIsTestingAiKey(false);
     }
   };
-
-  const showToast = useCallback((msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 2500);
-  }, []);
-
-  const handleDismiss = useCallback(async () => {
-    if (isTauri) {
-      await hideDesktopWindow();
-    } else {
-      setIsSimulatedClosed(true);
-    }
-  }, [isTauri]);
-
-  const handleOpen = useCallback(() => {
-    setIsSimulatedClosed(false);
-    setTimeout(() => inputRef.current?.focus(), 50);
-  }, []);
 
   // Global key listener for hotkey and Escape
   useEffect(() => {
@@ -347,7 +386,7 @@ export default function LauncherPage() {
     }
   }, [handleDismiss, showToast]);
 
-  // Handle AI question with Gemini API & local engine
+  // Handle Agentic AI with automated tool execution
   const askAi = useCallback(async (prompt: string) => {
     const cleanPrompt = prompt.trim();
     if (!cleanPrompt) return;
@@ -355,8 +394,22 @@ export default function LauncherPage() {
     setAiResponse(null);
 
     try {
-      const response = await queryGeminiAi(cleanPrompt);
-      setAiResponse(response);
+      const res = await queryAgenticAi(cleanPrompt);
+      setAiResponse(res.text);
+
+      if (res.actionExecuted) {
+        // Sync state from storage if agent created bangs, bookmarks, or apps
+        setSearchBangs(getStoredBangs());
+        if (typeof window !== 'undefined') {
+          try {
+            const favs = localStorage.getItem('arc-favorites');
+            if (favs) setFavorites(JSON.parse(favs));
+            const apps = localStorage.getItem('arc-installed-apps');
+            if (apps) setInstalledApps(JSON.parse(apps));
+          } catch {}
+        }
+        showToast(res.actionExecuted.summary);
+      }
     } catch {
       if (smartEval) {
         setAiResponse(`${smartEval.result}. ${smartEval.explanation || ''}`);
@@ -366,14 +419,74 @@ export default function LauncherPage() {
     } finally {
       setAiGenerating(false);
     }
-  }, [smartEval]);
+  }, [smartEval, showToast]);
 
   // Build Results List
   const items = useMemo<LauncherItem[]>(() => {
     const list: LauncherItem[] = [];
     const q = query.trim().toLowerCase();
 
-    // 0. User Saved Favorites
+    // 0. Check for Agentic Action Intent directly from search query
+    // e.g. "add shortcut eb for ebay" or "create bang rd for reddit"
+    if (q) {
+      const detectedAction = detectLocalAgentAction(query);
+      if (detectedAction) {
+        list.push({
+          id: 'agentic-action-preview',
+          type: 'ai',
+          title: `⚡ Execute Action: ${detectedAction.summary.replace(/[*_`]/g, '')}`,
+          subtitle: 'Press Enter to have Arc Agent configure this shortcut immediately',
+          icon: Sparkles,
+          category: 'Agent Action',
+          badge: 'Agentic AI',
+          action: () => {
+            askAi(query);
+          }
+        });
+      }
+    }
+
+    // 1. Check for Search Bang Prefix (e.g. "yt lofi hip hop", "gh tauri", "rd mechanical keyboards")
+    const bangPrefixMatch = query.match(/^([a-z0-9_-]+)\s+(.*)$/i);
+    if (bangPrefixMatch) {
+      const enteredPrefix = bangPrefixMatch[1].toLowerCase();
+      const queryRemainder = bangPrefixMatch[2].trim();
+      const matchedBang = searchBangs.find(b => b.prefix === enteredPrefix);
+      if (matchedBang && queryRemainder) {
+        const targetUrl = matchedBang.urlTemplate.replace('{q}', encodeURIComponent(queryRemainder));
+        list.push({
+          id: `bang-exec-${matchedBang.id}`,
+          type: 'url',
+          title: `Search ${matchedBang.name} for "${queryRemainder}"`,
+          subtitle: `Launch direct URL: ${targetUrl}`,
+          icon: Compass,
+          category: 'Search Bangs',
+          badge: `!${matchedBang.prefix}`,
+          action: () => {
+            openDesktopUrl(targetUrl);
+          }
+        });
+      }
+    } else if (q) {
+      // If user typed only a bang prefix (e.g. "yt", "gh"), show hint card
+      const exactBang = searchBangs.find(b => b.prefix === q);
+      if (exactBang) {
+        list.push({
+          id: `bang-hint-${exactBang.id}`,
+          type: 'search',
+          title: `${exactBang.name} Search (!${exactBang.prefix})`,
+          subtitle: `Type "${exactBang.prefix} <search query>" (e.g. "${exactBang.prefix} ${exactBang.exampleQuery || 'hello'}")`,
+          icon: Compass,
+          category: 'Search Bangs',
+          badge: `!${exactBang.prefix}`,
+          action: () => {
+            setQuery(`${exactBang.prefix} `);
+          }
+        });
+      }
+    }
+
+    // 2. User Saved Favorites
     favorites.forEach(fav => {
       if (!q || fav.title.toLowerCase().includes(q) || fav.value.toLowerCase().includes(q)) {
         list.push({
@@ -397,7 +510,7 @@ export default function LauncherPage() {
       }
     });
 
-    // 1. Instant Equation / Math evaluation result
+    // 3. Instant Equation / Math evaluation result
     if (smartEval) {
       list.push({
         id: 'smart-eval-result',
@@ -415,7 +528,7 @@ export default function LauncherPage() {
       });
     }
 
-    // 2. Direct URL match
+    // 4. Direct URL match
     const looksLikeUrl = /^(https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,}(\/.*)?$/i.test(query.trim());
     if (looksLikeUrl) {
       const fullUrl = query.startsWith('http://') || query.startsWith('https://') ? query : `https://${query}`;
@@ -433,9 +546,8 @@ export default function LauncherPage() {
       });
     }
 
-    // 3. User Enabled Installed System Apps & Tools
+    // 5. User Enabled Installed System Apps & Tools
     installedApps.forEach(app => {
-      // Check if user has disabled this app
       if (appVisibility[app.id] === false) return;
 
       if (!q || app.name.toLowerCase().includes(q) || (app.command && app.command.toLowerCase().includes(q)) || (app.category && app.category.toLowerCase().includes(q))) {
@@ -463,9 +575,9 @@ export default function LauncherPage() {
       }
     });
 
-    // 4. Quick System Commands
+    // 6. Quick System Commands
     const systemCommands = [
-      { id: 'sys-settings', title: 'Arc Desktop Settings & App Manager', subtitle: 'Toggle app visibility, manage bookmarks and shortcuts', icon: Sliders, command: 'settings' },
+      { id: 'sys-settings', title: 'Arc Desktop Settings & App Manager', subtitle: 'Toggle app visibility, manage search bangs and bookmarks', icon: Sliders, command: 'settings' },
       { id: 'sys-calc', title: 'Open Calculator', subtitle: 'Quick access to desktop math tool', icon: Calculator, command: 'calc' },
       { id: 'sys-lock', title: 'Lock Screen', subtitle: 'Lock current desktop session', icon: Lock, command: 'lock' },
       { id: 'sys-mute', title: 'Mute / Unmute Audio', subtitle: 'Toggle master system volume', icon: VolumeX, command: 'mute' },
@@ -499,13 +611,13 @@ export default function LauncherPage() {
       }
     });
 
-    // 5. AI Query & Web Search when user types
+    // 7. AI Query & Web Search when user types
     if (q) {
       list.push({
         id: 'ai-prompt',
         type: 'ai',
-        title: `Ask AI: "${query}"`,
-        subtitle: 'Get instantaneous inline AI summary (Shift + Enter)',
+        title: `Ask Arc Intelligence: "${query}"`,
+        subtitle: 'Get inline AI answers or execute agent actions (Shift + Enter)',
         icon: Sparkles,
         category: 'Intelligence',
         badge: 'Gemini',
@@ -529,7 +641,7 @@ export default function LauncherPage() {
     }
 
     return list;
-  }, [query, smartEval, askAi, handleDismiss, showToast, favorites, installedApps, appVisibility, executeAppLaunch]);
+  }, [query, smartEval, askAi, handleDismiss, showToast, favorites, installedApps, appVisibility, executeAppLaunch, searchBangs]);
 
   const activeIndex = items.length > 0 ? Math.min(selectedIndex, items.length - 1) : 0;
 
@@ -622,24 +734,31 @@ export default function LauncherPage() {
             <div className="flex flex-col h-[520px]">
               {/* Settings Header with Tab Switcher */}
               <div className="p-3 flex items-center justify-between border-b border-slate-800/80 bg-slate-950/60">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 overflow-x-auto">
                   <button
                     onClick={() => {
                       setShowSettings(false);
                       setTimeout(() => inputRef.current?.focus(), 50);
                     }}
-                    className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition"
+                    className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition shrink-0"
                     title="Back to search"
                   >
                     <ArrowLeft className="w-4 h-4" />
                   </button>
-                  <div className="flex gap-1 bg-slate-900 p-0.5 rounded-lg border border-slate-800">
+                  <div className="flex gap-1 bg-slate-900 p-0.5 rounded-lg border border-slate-800 shrink-0">
                     <button
                       onClick={() => setSettingsTab('apps')}
                       className={`px-2.5 py-1 rounded-md text-xs font-medium transition flex items-center gap-1.5 ${settingsTab === 'apps' ? 'bg-sky-500 text-slate-950 font-semibold shadow-sm' : 'text-slate-400 hover:text-white'}`}
                     >
                       <Laptop className="w-3.5 h-3.5" />
                       <span>Apps ({installedApps.length})</span>
+                    </button>
+                    <button
+                      onClick={() => setSettingsTab('bangs')}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition flex items-center gap-1.5 ${settingsTab === 'bangs' ? 'bg-sky-500 text-slate-950 font-semibold shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                    >
+                      <Compass className="w-3.5 h-3.5" />
+                      <span>Bangs ({searchBangs.length})</span>
                     </button>
                     <button
                       onClick={() => setSettingsTab('favorites')}
@@ -653,7 +772,7 @@ export default function LauncherPage() {
                       className={`px-2.5 py-1 rounded-md text-xs font-medium transition flex items-center gap-1.5 ${settingsTab === 'ai' ? 'bg-sky-500 text-slate-950 font-semibold shadow-sm' : 'text-slate-400 hover:text-white'}`}
                     >
                       <Sparkles className="w-3.5 h-3.5" />
-                      <span>AI & Gemini</span>
+                      <span>AI & Agent</span>
                     </button>
                   </div>
                 </div>
@@ -662,7 +781,7 @@ export default function LauncherPage() {
                   <button
                     onClick={handleRefreshApps}
                     disabled={isScanningApps}
-                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1.5 border border-slate-700 transition disabled:opacity-50"
+                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1.5 border border-slate-700 transition disabled:opacity-50 shrink-0"
                     title="Scan PC for installed apps"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isScanningApps ? 'animate-spin text-sky-400' : ''}`} />
@@ -674,7 +793,6 @@ export default function LauncherPage() {
               {/* Tab 1: Manage Apps & Visibility */}
               {settingsTab === 'apps' ? (
                 <div className="p-4 overflow-y-auto flex-1 space-y-5">
-                  {/* Search / Filter Installed Apps */}
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
@@ -687,7 +805,7 @@ export default function LauncherPage() {
                     </div>
                   </div>
 
-                  {/* Add Custom App Accordion / Form */}
+                  {/* Add Custom App */}
                   <div className="p-3 bg-slate-800/30 rounded-xl border border-slate-700/50 space-y-2.5">
                     <div className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                       <Plus className="w-3.5 h-3.5 text-sky-400" />
@@ -780,10 +898,122 @@ export default function LauncherPage() {
                     )}
                   </div>
                 </div>
-              ) : settingsTab === 'favorites' ? (
-                /* Tab 2: Favorites / Links */
+              ) : settingsTab === 'bangs' ? (
+                /* Tab 2: Search Bangs & Shortcuts */
                 <div className="p-4 overflow-y-auto flex-1 space-y-5">
-                  {/* Add Bookmark Form */}
+                  {/* Add New Search Bang */}
+                  <div className="p-3.5 bg-slate-800/30 rounded-xl border border-slate-700/50 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                        <Plus className="w-3.5 h-3.5 text-sky-400" />
+                        <span>Create Custom Search Bang</span>
+                      </div>
+                      <span className="text-[11px] text-slate-400">
+                        Or ask AI: <span className="text-sky-300 font-mono">&quot;create shortcut eb for ebay&quot;</span>
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <input
+                        className="bg-slate-950/60 border border-slate-700 rounded-lg p-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-500 font-mono"
+                        placeholder="Prefix (e.g. eb, rd)"
+                        value={newBangPrefix}
+                        onChange={e => setNewBangPrefix(e.target.value)}
+                      />
+                      <input
+                        className="bg-slate-950/60 border border-slate-700 rounded-lg p-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-500 sm:col-span-2"
+                        placeholder="Service Name (e.g. eBay, Reddit)"
+                        value={newBangName}
+                        onChange={e => setNewBangName(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <input
+                        className="bg-slate-950/60 border border-slate-700 rounded-lg p-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-500 sm:col-span-2"
+                        placeholder="Search URL template with {q} (e.g. https://site.com/search?q={q})"
+                        value={newBangUrl}
+                        onChange={e => setNewBangUrl(e.target.value)}
+                      />
+                      <input
+                        className="bg-slate-950/60 border border-slate-700 rounded-lg p-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-500"
+                        placeholder="Example (e.g. watch)"
+                        value={newBangExample}
+                        onChange={e => setNewBangExample(e.target.value)}
+                      />
+                    </div>
+
+                    <button
+                      onClick={handleAddBang}
+                      disabled={!newBangPrefix.trim() || !newBangUrl.trim()}
+                      className="w-full bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-semibold py-2 rounded-lg text-xs transition"
+                    >
+                      Save Search Bang
+                    </button>
+                  </div>
+
+                  {/* Registered Bangs List */}
+                  <div className="space-y-1.5 pb-2">
+                    <div className="flex items-center justify-between text-xs text-slate-400 px-1 font-medium">
+                      <span>Search Shortcuts ({searchBangs.length})</span>
+                      <button
+                        onClick={handleResetBangs}
+                        className="text-sky-400 hover:underline text-[11px]"
+                      >
+                        Reset Defaults
+                      </button>
+                    </div>
+
+                    {searchBangs.map(bang => (
+                      <div
+                        key={bang.id}
+                        className="flex items-center justify-between p-2.5 bg-slate-800/40 rounded-xl border border-slate-700/50 hover:bg-slate-800/60 transition"
+                      >
+                        <div className="min-w-0 flex-1 pr-3">
+                          <div className="text-xs text-white font-medium flex items-center gap-2">
+                            <span className="font-mono text-sky-300 font-bold bg-sky-950/80 border border-sky-800/60 px-1.5 py-0.5 rounded text-[11px]">
+                              {bang.prefix}
+                            </span>
+                            <span>{bang.name}</span>
+                            {bang.builtin && (
+                              <span className="text-[10px] text-slate-500">Built-in</span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-mono truncate mt-0.5">
+                            {bang.urlTemplate}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            onClick={() => {
+                              const testUrl = bang.urlTemplate.replace('{q}', encodeURIComponent(bang.exampleQuery || 'hello'));
+                              openDesktopUrl(testUrl);
+                            }}
+                            className="px-2 py-1 bg-slate-800 hover:bg-sky-500 hover:text-slate-950 text-slate-300 rounded-md text-[11px] font-medium flex items-center gap-1 transition"
+                            title="Test search"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            <span>Test</span>
+                          </button>
+
+                          {!bang.builtin && (
+                            <button
+                              onClick={() => handleDeleteBang(bang.prefix)}
+                              className="p-1.5 text-slate-500 hover:text-red-400 transition rounded-md"
+                              title="Delete search bang"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : settingsTab === 'favorites' ? (
+                /* Tab 3: Favorites / Links */
+                <div className="p-4 overflow-y-auto flex-1 space-y-5">
                   <div className="space-y-3 p-3.5 bg-slate-800/30 rounded-xl border border-slate-700/50">
                     <h3 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                       <Plus className="w-3.5 h-3.5 text-sky-400" />
@@ -877,7 +1107,7 @@ export default function LauncherPage() {
                   </div>
                 </div>
               ) : (
-                /* Tab 3: AI & Gemini Configuration */
+                /* Tab 4: AI & Agent Configuration */
                 <div className="p-4 overflow-y-auto flex-1 space-y-5">
                   <div className="p-4 bg-slate-800/30 rounded-xl border border-slate-700/50 space-y-4">
                     <div className="flex items-center justify-between">
@@ -886,7 +1116,7 @@ export default function LauncherPage() {
                         <h3 className="text-xs font-semibold text-white">Google Gemini AI Setup</h3>
                       </div>
                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-medium">
-                        {apiKeyInput ? 'Custom Key Active' : 'Instant AI Engine'}
+                        Agentic Function Calling Active
                       </span>
                     </div>
 
@@ -920,7 +1150,7 @@ export default function LauncherPage() {
                         </button>
                       </div>
                       <p className="text-[11px] text-slate-400">
-                        Stored locally in your desktop client. Never shared or sent to third parties.
+                        Stored locally in your desktop client. Powers live reasoning and automatic shortcut creation.
                       </p>
                     </div>
 
@@ -958,6 +1188,14 @@ export default function LauncherPage() {
                         {aiKeyTestResult}
                       </div>
                     )}
+
+                    <div className="p-3 bg-slate-900/80 rounded-lg border border-slate-800 text-[11px] text-slate-400 space-y-1">
+                      <div className="font-semibold text-slate-300">Agentic Voice & Command Examples:</div>
+                      <div>• &quot;create a shortcut eb to search ebay&quot;</div>
+                      <div>• &quot;add search bang amz for amazon&quot;</div>
+                      <div>• &quot;bookmark https://linear.app as Linear&quot;</div>
+                      <div>• &quot;save snippet :email with myemail@domain.com&quot;</div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -981,7 +1219,7 @@ export default function LauncherPage() {
                     setSelectedIndex(0);
                   }}
                   onKeyDown={handleInputKeyDown}
-                  placeholder="Search apps, type a calculation (e.g. 140 * 12), or ask AI..."
+                  placeholder="Type an app, search bang (e.g. yt lofi), math, or command AI..."
                   className="w-full bg-transparent text-base sm:text-lg text-white placeholder-slate-500 focus:outline-none tracking-tight font-normal"
                   autoFocus
                 />
@@ -1004,14 +1242,14 @@ export default function LauncherPage() {
                     {aiGenerating ? (
                       <div className="flex items-center gap-2 text-sky-300">
                         <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
-                        <span>Thinking...</span>
+                        <span>Arc Agent Thinking & Executing...</span>
                       </div>
                     ) : (
                       <div>
                         <div className="font-semibold text-sky-400 text-[11px] uppercase tracking-wider mb-1 flex items-center justify-between">
                           <span className="flex items-center gap-1.5">
                             <Bot className="w-3.5 h-3.5" />
-                            <span>Arc Intelligence</span>
+                            <span>Arc Agentic Intelligence</span>
                           </span>
                         </div>
                         <div className="whitespace-pre-line text-slate-100 font-normal">
@@ -1034,9 +1272,20 @@ export default function LauncherPage() {
                           <button
                             onClick={() => {
                               setShowSettings(true);
-                              setSettingsTab('ai');
+                              setSettingsTab('bangs');
                             }}
                             className="px-2.5 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 rounded-md text-xs font-medium transition flex items-center gap-1 border border-sky-500/30"
+                          >
+                            <Compass className="w-3 h-3" />
+                            <span>View All Bangs</span>
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              setShowSettings(true);
+                              setSettingsTab('ai');
+                            }}
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-xs font-medium transition flex items-center gap-1 border border-slate-700"
                           >
                             <Key className="w-3 h-3" />
                             <span>AI Settings</span>
@@ -1147,19 +1396,19 @@ export default function LauncherPage() {
                     <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
                       ⇧+Enter
                     </kbd>
-                    <span>Ask AI</span>
+                    <span>Ask AI / Agent</span>
                   </span>
                   <span className="flex items-center gap-1.5">
                     <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px] border border-slate-700">
-                      Esc
+                      yt &lt;q&gt;
                     </kbd>
-                    <span className="hidden sm:inline">Dismiss</span>
+                    <span className="hidden sm:inline">Bangs</span>
                   </span>
                 </div>
 
                 <div className="flex items-center gap-2">
                   <Zap className="w-3.5 h-3.5 text-sky-400" />
-                  <span>Arc Desktop v0.1.0</span>
+                  <span>Arc Desktop v0.2.0</span>
                 </div>
               </div>
             </>
