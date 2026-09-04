@@ -1,0 +1,6 @@
+{
+  "name": "Arc Tab - Floating Command Bar Extension",
+  "description": "An Arc Browser-inspired system-wide desktop command bar powered by Tauri and in-page Chromium extension with instant search, tab switching, and one-click export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
