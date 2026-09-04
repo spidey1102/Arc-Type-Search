@@ -1,5 +1,7 @@
 node_modules/
 .next/
+out/
+src-tauri/target/
 coverage/
 .DS_Store
 *.log

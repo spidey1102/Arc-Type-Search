@@ -49,6 +49,13 @@ type Favorite = {
   value: string;
 };
 
+function generateUniqueId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `fav-${Date.now()}`;
+}
+
 export default function LauncherPage() {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -58,7 +65,17 @@ export default function LauncherPage() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSimulatedClosed, setIsSimulatedClosed] = useState(false);
 
-  const [favorites, setFavorites] = useState<Favorite[]>([]);
+  const [favorites, setFavorites] = useState<Favorite[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('arc-favorites');
+        return stored ? JSON.parse(stored) : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
   const [showSettings, setShowSettings] = useState(false);
   const [newFavTitle, setNewFavTitle] = useState('');
   const [newFavType, setNewFavType] = useState<'url' | 'copy'>('url');
@@ -71,21 +88,17 @@ export default function LauncherPage() {
     inputRef.current?.focus();
   }, []);
 
-  useEffect(() => {
-    const stored = localStorage.getItem('arc-favorites');
-    if (stored) {
-      try { setFavorites(JSON.parse(stored)); } catch (e) {}
-    }
-  }, []);
-
   const saveFavorites = (newFavs: Favorite[]) => {
     setFavorites(newFavs);
-    localStorage.setItem('arc-favorites', JSON.stringify(newFavs));
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('arc-favorites', JSON.stringify(newFavs));
+    }
   };
 
   const handleAddFavorite = () => {
-    if (!newFavTitle || !newFavValue) return;
-    saveFavorites([...favorites, { id: Date.now().toString(), type: newFavType, title: newFavTitle, value: newFavValue }]);
+    if (!newFavTitle.trim() || !newFavValue.trim()) return;
+    const favId = generateUniqueId();
+    saveFavorites([...favorites, { id: favId, type: newFavType, title: newFavTitle.trim(), value: newFavValue.trim() }]);
     setNewFavTitle('');
     setNewFavValue('');
     showToast('Favorite added!');
@@ -186,7 +199,7 @@ export default function LauncherPage() {
     } finally {
       setAiGenerating(false);
     }
-  }, [smartEval]);
+  }, [smartEval, isTauri]);
 
   // Build items list based on query
   const items = useMemo<LauncherItem[]>(() => {

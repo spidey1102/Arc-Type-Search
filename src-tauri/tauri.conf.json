@@ -14,6 +14,7 @@
       {
         "title": "Arc",
         "label": "main",
+        "url": "launcher.html",
         "width": 720,
         "height": 540,
         "resizable": false,
@@ -22,7 +23,7 @@
         "alwaysOnTop": true,
         "center": true,
         "skipTaskbar": true,
-        "visible": false,
+        "visible": true,
         "shadow": false
       }
     ],
